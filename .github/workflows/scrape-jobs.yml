@@ -2,9 +2,10 @@ name: Scrape Medical Device Jobs
 
 on:
   schedule:
-    # Run every day at 2 AM UTC
+    # Run every day at 2 AM UTC (10 PM EST / 7 PM PST)
     - cron: '0 2 * * *'
-  # Allow manual trigger
+  
+  # Allow manual trigger from GitHub UI
   workflow_dispatch:
 
 jobs:
@@ -26,17 +27,68 @@ jobs:
         pip install scrapy requests lxml cssselect python-dateutil
     
     - name: Run Medical Device Jobs Scraper
+      id: scraper
       run: |
+        echo "Starting scraper..."
         python medical_device_jobs_scraper.py
+        echo "Scraper finished"
+        
+        # Check what files were created
+        echo ""
+        echo "Files created:"
+        ls -lh medical_device_jobs_*.json || echo "⚠️ No job files found"
       continue-on-error: true
+    
+    - name: Check and display results
+      run: |
+        echo "Current directory contents:"
+        ls -la
+        
+        echo ""
+        echo "JSON files found:"
+        if ls medical_device_jobs_*.json 1> /dev/null 2>&1; then
+          echo "✅ Job files created successfully"
+          wc -l medical_device_jobs_*.json
+        else
+          echo "⚠️ No job files found - scraper may have encountered issues"
+        fi
     
     - name: Configure git
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action Bot"
     
-    - name: Commit scraped jobs
+    - name: Commit and push job data
+      id: commit
       run: |
-        git add medical_device_jobs_*.json
-        git commit -m "🔄 Automated job scrape - $(date +'%Y-%m-%d %H:%M:%S UTC')" || true
-        git push || true
+        if ls medical_device_jobs_*.json 1> /dev/null 2>&1; then
+          echo "Found job files, committing..."
+          git add medical_device_jobs_*.json
+          git commit -m "🔄 Automated job scrape - $(date +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
+          git push
+          echo "✅ Job files committed and pushed"
+        else
+          echo "⚠️ No job files to commit"
+          exit 0
+        fi
+    
+    - name: Summary
+      if: always()
+      run: |
+        echo ""
+        echo "=========================================="
+        echo "WORKFLOW SUMMARY"
+        echo "=========================================="
+        echo "Status: ${{ job.status }}"
+        echo "Time: $(date +'%Y-%m-%d %H:%M:%S UTC')"
+        echo ""
+        
+        if ls medical_device_jobs_*.json 1> /dev/null 2>&1; then
+          echo "✅ Jobs successfully scraped and saved"
+          echo "Files: $(ls -1 medical_device_jobs_*.json | wc -l)"
+        else
+          echo "⚠️ No job files created"
+          echo "Check logs above for errors"
+        fi
+        
+        echo "=========================================="
