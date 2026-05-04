@@ -20,7 +20,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     
     - name: Set up Node.js
       uses: actions/setup-node@v4
@@ -43,7 +43,7 @@ jobs:
         PUBLIC_URL: https://${{ github.repository_owner }}.github.io/medical-device-job-scraper
     
     - name: Upload artifact
-      uses: actions/upload-pages-artifact@v2
+      uses: actions/upload-pages-artifact@v3
       with:
         path: 'web_app/build'
 
