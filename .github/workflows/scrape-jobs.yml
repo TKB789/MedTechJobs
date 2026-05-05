@@ -2,9 +2,8 @@ name: Scrape Medical Device Jobs
 
 on:
   schedule:
-    # Run every day at 2 AM UTC (10 PM EST / 7 PM PST)
+    # Daily at 02:00 UTC
     - cron: '0 2 * * *'
-  # Allow manual trigger
   workflow_dispatch:
 
 permissions:
@@ -15,96 +14,96 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.11'
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install scrapy requests lxml cssselect python-dateutil
+        pip install -r scrapy_spider/requirements.txt
 
-    - name: Run Medical Device Jobs Scraper
+    - name: Run scraper
       id: scraper
-      run: |
-        echo "Starting scraper..."
-        python scrapy_spider/medical_device_jobs_scraper.py
-        echo "Scraper finished"
-
-        echo ""
-        echo "Files created:"
-        ls -lh medical_device_jobs_*.json 2>/dev/null || echo "⚠️ No job files found"
+      # `continue-on-error` so a partial-failure run still commits whatever it
+      # collected. The "every source zero" exit code (2) is surfaced via the
+      # job summary instead of failing the workflow.
       continue-on-error: true
+      run: |
+        echo "Starting scraper at $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+        python scrapy_spider/medical_device_jobs_scraper.py
+        echo "Exit code: $?"
 
     - name: Stage latest scrape into web_app/public/
       id: stage
       run: |
-        # Pick the most recent scraped JSON. Filenames embed YYYYMMDD_HHMMSS,
-        # so a lexicographic sort is also chronological.
         latest=$(ls -1 medical_device_jobs_*.json 2>/dev/null | sort | tail -1 || true)
-
         if [ -z "$latest" ]; then
-          echo "⚠️ No scraped JSON to stage — the previous version stays live."
+          echo "⚠️ No JSON file produced. Nothing to stage."
           echo "staged=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        echo "Staging $latest as web_app/public/medical_device_jobs.json"
+        # Skip if the file is an empty array — leave the previous live data alone.
+        size=$(wc -c < "$latest")
+        first_chars=$(head -c 8 "$latest" | tr -d '[:space:]')
+        echo "Latest file: $latest ($size bytes, starts with: $first_chars)"
+
+        # An empty array serializes to "[]" — 2 bytes. Anything <= 4 bytes is junk.
+        if [ "$size" -le 4 ]; then
+          echo "⚠️ $latest is effectively empty; keeping previous web_app/public copy."
+          echo "staged=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
         mkdir -p web_app/public
         cp "$latest" web_app/public/medical_device_jobs.json
 
-        # Small manifest so the UI can show provenance if it wants to.
         cat > web_app/public/jobs-manifest.json <<EOF
         {
           "latest": "medical_device_jobs.json",
           "source": "$latest",
-          "scraped_at_utc": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          "scraped_at_utc": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+          "size_bytes": $size
         }
         EOF
 
+        echo "✅ Staged $latest as web_app/public/medical_device_jobs.json"
         echo "staged=true" >> "$GITHUB_OUTPUT"
-
-    - name: Show what changed
-      run: |
-        echo "Files in web_app/public/:"
-        ls -lh web_app/public/ || true
-        echo ""
-        echo "Top-level scraped files:"
-        ls -lh medical_device_jobs_*.json 2>/dev/null || echo "(none)"
 
     - name: Configure git
       run: |
         git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action Bot"
+        git config --local user.name  "GitHub Action Bot"
 
-    - name: Commit and push job data
+    - name: Commit and push
       run: |
-        # Stage both the timestamped archive at repo root and the live copies in public/.
         git add medical_device_jobs_*.json 2>/dev/null || true
         git add web_app/public/medical_device_jobs.json 2>/dev/null || true
         git add web_app/public/jobs-manifest.json 2>/dev/null || true
 
         if git diff --staged --quiet; then
-          echo "No changes to commit."
+          echo "Nothing changed."
           exit 0
         fi
 
         git commit -m "🔄 Automated job scrape — $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
         git push
-        echo "✅ Pushed updated job data; deploy workflow will rebuild the site."
+        echo "✅ Committed and pushed; deploy workflow will rebuild the site."
 
     - name: Summary
       if: always()
       run: |
-        echo ""
-        echo "=========================================="
-        echo "SCRAPER WORKFLOW SUMMARY"
-        echo "=========================================="
-        echo "Status: ${{ job.status }}"
-        echo "Staged into public/: ${{ steps.stage.outputs.staged }}"
-        echo "Time: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-        echo "=========================================="
+        echo "## Scraper run summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- Time: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+        echo "- Staged into public/: ${{ steps.stage.outputs.staged }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Scraper exit code: ${{ steps.scraper.outcome }}" >> $GITHUB_STEP_SUMMARY
+        if ls medical_device_jobs_*.json 1>/dev/null 2>&1; then
+          latest=$(ls -1 medical_device_jobs_*.json | sort | tail -1)
+          echo "- Latest file: $latest ($(wc -c < $latest) bytes)" >> $GITHUB_STEP_SUMMARY
+        fi
