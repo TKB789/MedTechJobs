@@ -1,1 +1,5 @@
-
+scrapy>=2.8.0
+requests>=2.31.0
+lxml>=4.9.0
+cssselect>=1.2.0
+python-dateutil>=2.8.2
