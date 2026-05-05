@@ -1,8 +1,8 @@
 {
   "files": {
-    "main.css": "/medical-device-job-scraper/static/css/main.d3dbdd07.css",
-    "main.js": "/medical-device-job-scraper/static/js/main.5208d037.js",
-    "index.html": "/medical-device-job-scraper/index.html"
+    "main.css": "/MedTechJobs/static/css/main.d3dbdd07.css",
+    "main.js": "/MedTechJobs/static/js/main.5208d037.js",
+    "index.html": "/MedTechJobs/index.html"
   },
   "entrypoints": [
     "static/css/main.d3dbdd07.css",
