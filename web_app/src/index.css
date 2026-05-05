@@ -1,26 +1,65 @@
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background-color: #0f172a;
-  color: #ffffff;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+  }
+  body {
+    background-color: #f7f6f2;
+    color: #16140f;
+    font-family: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "ss01", "cv11";
+  }
+  ::selection {
+    background: #d94f2c;
+    color: #f7f6f2;
+  }
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+@layer utilities {
+  /* Subtle paper grain on the page background */
+  .bg-grain {
+    background-image:
+      radial-gradient(rgba(20,18,12,0.045) 1px, transparent 1px),
+      radial-gradient(rgba(20,18,12,0.025) 1px, transparent 1px);
+    background-size: 3px 3px, 7px 7px;
+    background-position: 0 0, 1px 2px;
+  }
+
+  /* Hairline separators in the editorial style */
+  .rule {
+    border-top: 1px solid #16140f;
+  }
+  .rule-soft {
+    border-top: 1px solid #d8d3c4;
+  }
+
+  .num-tabular { font-variant-numeric: tabular-nums; }
 }
 
-* {
-  box-sizing: border-box;
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-rise {
+  animation: rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-html, body, #root {
-  margin: 0;
-  padding: 0;
-  width: 100%;
-  height: 100%;
+/* Custom underline-on-hover for links, editorial style */
+.link-underline {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  transition: background-size 0.3s ease;
+}
+.link-underline:hover {
+  background-size: 0% 1px;
+  background-position: 100% 100%;
 }
