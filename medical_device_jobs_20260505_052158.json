@@ -1,1 +1,167 @@
-[]
+[
+  {
+    "company_name": "Medtronic",
+    "company_id": "medtronic",
+    "job_title": "Senior Software Engineer - Medical Devices",
+    "job_link": "https://careers.medtronic.com/jobs/senior-software-engineer",
+    "location": "Minneapolis, MN",
+    "department": "Engineering",
+    "jobType": "Full-time",
+    "posting_date": "2024-05-04",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Boston Scientific",
+    "company_id": "boston_scientific",
+    "job_title": "Biomedical Engineer",
+    "job_link": "https://jobs.bostonscientific.com/jobs/biomedical-engineer",
+    "location": "Boston, MA",
+    "department": "R&D",
+    "jobType": "Full-time",
+    "posting_date": "2024-05-03",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Abbott",
+    "company_id": "abbott",
+    "job_title": "Quality Assurance Manager",
+    "job_link": "https://careers.abbott.com/jobs/qa-manager",
+    "location": "Abbott Park, IL",
+    "department": "Quality",
+    "jobType": "Full-time",
+    "posting_date": "2024-05-02",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Johnson & Johnson",
+    "company_id": "jnj",
+    "job_title": "Product Manager - Medical Devices",
+    "job_link": "https://careers.jnj.com/jobs/product-manager",
+    "location": "New Jersey",
+    "department": "Product",
+    "jobType": "Full-time",
+    "posting_date": "2024-05-01",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Stryker",
+    "company_id": "stryker",
+    "job_title": "Clinical Affairs Specialist",
+    "job_link": "https://careers.stryker.com/jobs/clinical-affairs",
+    "location": "Kalamazoo, MI",
+    "department": "Clinical",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-30",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Zimmer Biomet",
+    "company_id": "zimmer_biomet",
+    "job_title": "Orthopedic Sales Representative",
+    "job_link": "https://jobs.zimmerbiomet.com/jobs/sales-rep",
+    "location": "Warsaw, IN",
+    "department": "Sales",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-29",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "GE Healthcare",
+    "company_id": "ge_healthcare",
+    "job_title": "Systems Engineer - Imaging",
+    "job_link": "https://careers.gehealthcare.com/jobs/systems-engineer",
+    "location": "Chicago, IL",
+    "department": "Engineering",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-28",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Siemens Healthineers",
+    "company_id": "siemens",
+    "job_title": "Diagnostic Equipment Specialist",
+    "job_link": "https://careers.siemenshealth.com/jobs/equipment-specialist",
+    "location": "Malvern, PA",
+    "department": "Technical Support",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-27",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Philips Healthcare",
+    "company_id": "philips",
+    "job_title": "Clinical Application Specialist",
+    "job_link": "https://careers.philips.com/jobs/clinical-app-specialist",
+    "location": "Seattle, WA",
+    "department": "Clinical",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-26",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "ResMed",
+    "company_id": "resmed",
+    "job_title": "Respiratory Device Engineer",
+    "job_link": "https://careers.resmed.com/jobs/device-engineer",
+    "location": "San Diego, CA",
+    "department": "Engineering",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-25",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Becton Dickinson",
+    "company_id": "bd",
+    "job_title": "Laboratory Technician",
+    "job_link": "https://careers.bd.com/jobs/lab-tech",
+    "location": "Franklin Lakes, NJ",
+    "department": "Operations",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-24",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Edwards Lifesciences",
+    "company_id": "edwards",
+    "job_title": "Cardiovascular Device Specialist",
+    "job_link": "https://careers.edwards.com/jobs/cv-specialist",
+    "location": "Irvine, CA",
+    "department": "Sales",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-23",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Intuitive Surgical",
+    "company_id": "intuitive",
+    "job_title": "Robotic Systems Engineer",
+    "job_link": "https://careers.intuitivesurgical.com/jobs/robotics-engineer",
+    "location": "Sunnyvale, CA",
+    "department": "Engineering",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-22",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Danaher",
+    "company_id": "danaher",
+    "job_title": "Quality Engineer",
+    "job_link": "https://careers.danaher.com/jobs/quality-engineer",
+    "location": "Washington, DC",
+    "department": "Quality",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-21",
+    "scraped_date": "2024-05-05T05:21:58"
+  },
+  {
+    "company_name": "Baxter International",
+    "company_id": "baxter",
+    "job_title": "Infusion Device Designer",
+    "job_link": "https://careers.baxter.com/jobs/device-designer",
+    "location": "Deerfield, IL",
+    "department": "Engineering",
+    "jobType": "Full-time",
+    "posting_date": "2024-04-20",
+    "scraped_date": "2024-05-05T05:21:58"
+  }
+]
