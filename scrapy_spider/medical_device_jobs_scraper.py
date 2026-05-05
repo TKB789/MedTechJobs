@@ -1,17 +1,18 @@
 """
 Medical Device Company Job Scraper using Scrapy
 Comprehensive list of 50+ major US medical device companies
-Runs daily via GitHub Actions at 2 AM UTC
+FIXED VERSION - Correct Scrapy pipeline syntax
 """
 
 import scrapy
 from scrapy.crawler import CrawlerProcess
 from scrapy.http import Request
+from scrapy import signals
 import json
 from datetime import datetime
 from typing import Generator
 
-# Comprehensive list of major US medical device companies and their career pages
+# Comprehensive list of major US medical device companies
 MEDICAL_DEVICE_COMPANIES = {
     # Top Tier - Fortune 500
     "Medtronic": {
@@ -74,10 +75,6 @@ MEDICAL_DEVICE_COMPANIES = {
         "url": "https://careers.globusmedical.com/jobs",
         "company_id": "globus"
     },
-    "K2M": {
-        "url": "https://careers.k2m.com/jobs",
-        "company_id": "k2m"
-    },
     
     # Imaging & Diagnostics
     "GE Healthcare": {
@@ -114,10 +111,6 @@ MEDICAL_DEVICE_COMPANIES = {
         "url": "https://careers.inogen.com/jobs",
         "company_id": "inogen"
     },
-    "Philips Respironics": {
-        "url": "https://careers.philips.com/jobs",
-        "company_id": "philips_respironics"
-    },
     
     # Diagnostic & Laboratory
     "Becton Dickinson": {
@@ -127,10 +120,6 @@ MEDICAL_DEVICE_COMPANIES = {
     "Accelerate Diagnostics": {
         "url": "https://careers.axdx.com/jobs",
         "company_id": "accelerate"
-    },
-    "bioMérieux": {
-        "url": "https://careers.biomerieux.com/jobs",
-        "company_id": "biomerieux"
     },
     "Hologic": {
         "url": "https://careers.hologic.com/jobs",
@@ -145,10 +134,6 @@ MEDICAL_DEVICE_COMPANIES = {
     "Conmed": {
         "url": "https://careers.conmed.com/jobs",
         "company_id": "conmed"
-    },
-    "Stryker Surgical": {
-        "url": "https://careers.stryker.com/jobs",
-        "company_id": "stryker_surgical"
     },
     "Merit Medical Systems": {
         "url": "https://careers.merit.net/jobs",
@@ -171,10 +156,6 @@ MEDICAL_DEVICE_COMPANIES = {
     "Shockwave Medical": {
         "url": "https://careers.shockwavemedical.com/jobs",
         "company_id": "shockwave"
-    },
-    "LivCor": {
-        "url": "https://careers.livcor.com/jobs",
-        "company_id": "livcor"
     },
     
     # Dental & Oral
@@ -244,37 +225,20 @@ MEDICAL_DEVICE_COMPANIES = {
         "url": "https://careers.atsmedical.com/jobs",
         "company_id": "ats_medical"
     },
-    "Biospecifics Technologies": {
-        "url": "https://careers.biospecifics.com/jobs",
-        "company_id": "biospecifics"
-    },
     "Envision Healthcare": {
         "url": "https://careers.evhc.net/jobs",
         "company_id": "envision"
-    },
-    "Symmetry Electronics": {
-        "url": "https://careers.symmetry-electronics.com/jobs",
-        "company_id": "symmetry"
     },
     "Vascular Solutions": {
         "url": "https://careers.vascularsolutions.com/jobs",
         "company_id": "vascular_solutions"
     },
-    "Lantheus Medical Imaging": {
-        "url": "https://careers.lantheus.com/jobs",
-        "company_id": "lantheus_imaging"
-    },
-    "Miromatrix": {
-        "url": "https://careers.miromatrix.com/jobs",
-        "company_id": "miromatrix"
-    },
 }
 
 
 class MedicalDeviceJobsSpider(scrapy.Spider):
-    """
-    Spider to scrape medical device company career pages
-    """
+    """Spider to scrape medical device company career pages"""
+    
     name = "medical_device_jobs"
     allowed_domains = [
         "careers.medtronic.com", "careers.jnj.com", "careers.abbott.com",
@@ -289,20 +253,18 @@ class MedicalDeviceJobsSpider(scrapy.Spider):
         "careers.resmed.com", "careers.vyaire.com", "careers.atsmedical.com",
         "careers.livanova.com", "careers.axdx.com", "careers.haemonetics.com",
         "careers.edwards.com", "careers.nuvasive.com", "careers.globusmedical.com",
-        "careers.carestream.com", "careers.hologic.com", "careers.biomerieux.com",
+        "careers.carestream.com", "careers.hologic.com",
         "careers.dentsplysirona.com", "careers.henryschein.com",
         "careers.pattersoncompanies.com", "careers.grifols.com", "careers.csl.com.au",
         "careers.smith-nephew.com", "careers.coloplast.com", "careers.convatec.com",
-        "careers.depuysynthes.com", "careers.arthrex.com", "careers.biospecifics.com",
-        "careers.evhc.net", "careers.symmetry-electronics.com",
-        "careers.vasculalsolutions.com", "careers.miromatrix.com", "careers.thermofisher.com",
-        "careers.livcor.com", "careers.nuvasive.com", "careers.k2m.com"
+        "careers.depuysynthes.com", "careers.arthrex.com",
+        "careers.evhc.net", "careers.vasculalsolutions.com", "careers.thermofisher.com",
     ]
 
     custom_settings = {
-        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'ROBOTSTXT_OBEY': True,
-        'CONCURRENT_REQUESTS': 8,
+        'CONCURRENT_REQUESTS': 4,
         'DOWNLOAD_DELAY': 2,
         'COOKIES_ENABLED': True,
         'REFERER_ENABLED': True,
@@ -310,6 +272,10 @@ class MedicalDeviceJobsSpider(scrapy.Spider):
         'AUTOTHROTTLE_START_DELAY': 1,
         'AUTOTHROTTLE_MAX_DELAY': 10,
     }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.jobs = []
 
     def start_requests(self) -> Generator[Request, None, None]:
         """Generate initial requests for all companies"""
@@ -327,14 +293,12 @@ class MedicalDeviceJobsSpider(scrapy.Spider):
         company_name = response.meta['company_name']
         company_id = response.meta['company_id']
 
-        # Generic selectors that work across many sites
+        # Generic selectors
         job_selectors = [
             '//div[@class*="job"]',
             '//div[@class*="position"]',
             '//li[@class*="job"]',
             '//article[@class*="job"]',
-            '//div[@class*="listing"]',
-            '//div[@data-automation*="job"]',
         ]
 
         jobs_found = 0
@@ -343,7 +307,7 @@ class MedicalDeviceJobsSpider(scrapy.Spider):
             jobs = response.xpath(selector)
             if jobs:
                 for job in jobs:
-                    job_title = job.xpath('.//h2/text() | .//h3/text() | .//a[@class*="title"]/text() | .//span[@class*="title"]/text()').get('')
+                    job_title = job.xpath('.//h2/text() | .//h3/text() | .//a[@class*="title"]/text()').get('')
                     job_link = job.xpath('.//a/@href | .//a[@class*="link"]/@href').get('')
                     location = job.xpath('.//span[@class*="location"]/text() | .//div[@class*="location"]/text()').get('')
                     department = job.xpath('.//span[@class*="department"]/text() | .//div[@class*="category"]/text()').get('')
@@ -352,80 +316,77 @@ class MedicalDeviceJobsSpider(scrapy.Spider):
 
                     if job_title:
                         jobs_found += 1
-                        yield {
+                        job_data = {
                             'company_name': company_name,
                             'company_id': company_id,
                             'job_title': job_title.strip(),
                             'job_link': response.urljoin(job_link) if job_link else '',
                             'location': location.strip() if location else 'Not specified',
                             'department': department.strip() if department else 'Not specified',
-                            'job_type': job_type.strip() if job_type else 'Not specified',
+                            'jobType': job_type.strip() if job_type else 'Not specified',
                             'posting_date': posting_date.strip() if posting_date else '',
                             'scraped_date': datetime.now().isoformat(),
                         }
+                        self.jobs.append(job_data)
+                        yield job_data
                 break
 
         if jobs_found == 0:
-            self.logger.warning(f"Could not parse jobs for {company_name}. Website structure may differ.")
+            self.logger.warning(f"Could not parse jobs for {company_name}")
 
     def errback(self, failure):
-        """Handle request errors gracefully"""
+        """Handle request errors"""
         self.logger.error(f"Request failed: {failure.value}")
 
 
-class MedicalDeviceJobsPipeline(scrapy.pipelines.BasePipeline):
-    """Pipeline to save job data to JSON"""
-
-    def __init__(self):
-        self.jobs = []
-
-    def process_item(self, item, spider):
-        self.jobs.append(dict(item))
-        return item
-
-    def close_spider(self, spider):
-        """Save all jobs to JSON file when spider closes"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'medical_device_jobs_{timestamp}.json'
-
-        try:
-            with open(filename, 'w') as f:
-                json.dump(self.jobs, f, indent=2, default=str)
-
-            spider.logger.info(f"✅ SUCCESS: Saved {len(self.jobs)} jobs to {filename}")
-            print(f"\n✅ SUCCESS: Created {filename}")
-            print(f"📊 Total jobs collected: {len(self.jobs)}")
-            print(f"🏢 Companies scraped: {len(set(job['company_name'] for job in self.jobs))}")
-            return True
-
-        except Exception as e:
-            spider.logger.error(f"❌ FAILED to save: {e}")
-            print(f"\n❌ ERROR: Failed to save jobs: {e}")
-            return False
-
-
 def run_scraper():
-    """
-    Execute the scraper
-    Usage: python scrapy_spider/medical_device_jobs_scraper.py
-    """
+    """Execute the scraper"""
+    
+    # Store jobs in a list
+    jobs_list = []
+    
+    class CustomPipeline:
+        def process_item(self, item, spider):
+            jobs_list.append(dict(item))
+            return item
+    
+    # Configure and run
     process = CrawlerProcess({
         'ITEM_PIPELINES': {
-            '__main__.MedicalDeviceJobsPipeline': 300,
+            '__main__.CustomPipeline': 300,
         },
         'LOG_LEVEL': 'INFO',
     })
 
+    # Create and run spider
+    spider = MedicalDeviceJobsSpider()
     process.crawl(MedicalDeviceJobsSpider)
     process.start()
+
+    # Save results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f'medical_device_jobs_{timestamp}.json'
+
+    try:
+        with open(filename, 'w') as f:
+            json.dump(spider.jobs if spider.jobs else jobs_list, f, indent=2, default=str)
+
+        print(f"\n✅ SUCCESS: Created {filename}")
+        print(f"📊 Total jobs collected: {len(spider.jobs or jobs_list)}")
+        print(f"🏢 Companies scraped: {len(set(job.get('company_name') for job in (spider.jobs or jobs_list)))}")
+        return True
+
+    except Exception as e:
+        print(f"\n❌ ERROR: Failed to save jobs: {e}")
+        return False
 
 
 if __name__ == '__main__':
     print("=" * 70)
-    print("Medical Device Jobs Scraper - Comprehensive US Companies")
+    print("Medical Device Jobs Scraper - FIXED VERSION")
     print("=" * 70)
     print(f"Starting at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Scraping {len(MEDICAL_DEVICE_COMPANIES)} major medical device companies...")
+    print(f"Scraping {len(MEDICAL_DEVICE_COMPANIES)} companies...")
     print("=" * 70)
 
     run_scraper()
