@@ -134,13 +134,16 @@ export default function MedicalDeviceJobSearch() {
     let result = jobs;
 
     if (searchTerm.trim()) {
-      const q = searchTerm.toLowerCase();
-      result = result.filter(j =>
-        j.title.toLowerCase().includes(q) ||
-        j.company.toLowerCase().includes(q) ||
-        j.location.toLowerCase().includes(q) ||
-        j.department.toLowerCase().includes(q)
-      );
+      // Split on whitespace so "regulatory boston" finds Boston-based regulatory roles.
+      // Every token must appear somewhere in the searchable haystack.
+      const tokens = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
+      result = result.filter(j => {
+        const haystack = [
+          j.title, j.company, j.location,
+          j.department, j.jobType
+        ].join(' ').toLowerCase();
+        return tokens.every(t => haystack.includes(t));
+      });
     }
     if (filters.company)    result = result.filter(j => j.company === filters.company);
     if (filters.location)   result = result.filter(j => j.location.toLowerCase().includes(filters.location.toLowerCase()));
@@ -240,27 +243,67 @@ export default function MedicalDeviceJobSearch() {
               <label className="block font-mono text-[10px] uppercase tracking-[0.25em] text-ink-500 mb-1.5">
                 Search the ledger
               </label>
-              <div className="relative">
-                <Search className="absolute left-0 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-400" />
-                <input
-                  type="text"
-                  placeholder="Title, company, location, department…"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full bg-transparent border-0 border-b border-ink-900 pl-7 pr-3 py-2.5
-                             font-display text-2xl sm:text-3xl placeholder-ink-300
-                             focus:outline-none focus:border-accent transition-colors"
-                />
-                {searchTerm && (
-                  <button
-                    onClick={() => setSearchTerm('')}
-                    className="absolute right-0 top-1/2 -translate-y-1/2 text-ink-400 hover:text-accent"
-                    aria-label="Clear search"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
+              <div className="relative flex items-end gap-3">
+                <div className="relative flex-1">
+                  <Search className="absolute left-0 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-400" />
+                  <input
+                    type="text"
+                    placeholder="Title, company, location, department…"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        document.getElementById('listings')
+                          ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      }
+                    }}
+                    className="w-full bg-transparent border-0 border-b border-ink-900 pl-7 pr-8 py-2.5
+                               font-display text-2xl sm:text-3xl placeholder-ink-300
+                               focus:outline-none focus:border-accent transition-colors"
+                  />
+                  {searchTerm && (
+                    <button
+                      onClick={() => setSearchTerm('')}
+                      className="absolute right-0 top-1/2 -translate-y-1/2 text-ink-400 hover:text-accent"
+                      aria-label="Clear search"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={() =>
+                    document.getElementById('listings')
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                  }
+                  className="shrink-0 px-4 py-2.5 bg-ink-900 text-ink-50 hover:bg-accent
+                             transition-colors font-mono text-[11px] uppercase tracking-[0.2em]
+                             flex items-center gap-1.5"
+                >
+                  <Search className="w-3.5 h-3.5" /> Search
+                </button>
               </div>
+
+              {/* Live status — visible immediately, no scrolling required */}
+              {searchTerm.trim() && (
+                <div className="mt-2 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-600">
+                  {filteredJobs.length === 0 ? (
+                    <span className="text-accent">
+                      No matches for "<span className="normal-case tracking-normal font-display italic">{searchTerm}</span>"
+                    </span>
+                  ) : (
+                    <span>
+                      <span className="text-ink-900 font-semibold num-tabular">
+                        {filteredJobs.length}
+                      </span>{' '}
+                      {filteredJobs.length === 1 ? 'match' : 'matches'} for "
+                      <span className="normal-case tracking-normal font-display italic text-ink-900">
+                        {searchTerm}
+                      </span>"
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Sort */}
@@ -340,13 +383,23 @@ export default function MedicalDeviceJobSearch() {
       </section>
 
       {/* ============== LISTINGS ============== */}
-      <main className="max-w-7xl mx-auto px-5 sm:px-8 py-10">
+      <main id="listings" className="max-w-7xl mx-auto px-5 sm:px-8 py-10 scroll-mt-4">
         {filteredJobs.length === 0 ? (
-          <div className="text-center py-24">
-            <div className="font-display italic text-4xl text-ink-400 mb-2">— nothing in print —</div>
-            <p className="font-mono text-[11px] uppercase tracking-[0.25em] text-ink-500">
-              No listings match the current filters
+          <div className="text-center py-20 sm:py-24">
+            <div className="font-display italic text-4xl sm:text-5xl text-ink-400 mb-3">
+              — nothing in print —
+            </div>
+            <p className="font-mono text-[11px] uppercase tracking-[0.25em] text-ink-500 mb-6">
+              {searchTerm.trim()
+                ? <>No listings match "<span className="normal-case tracking-normal font-display italic text-ink-700">{searchTerm}</span>"{Object.values(filters).some(Boolean) && ' with the current filters'}</>
+                : 'No listings match the current filters'}
             </p>
+            <button
+              onClick={clearAll}
+              className="px-4 py-2 border border-ink-900 hover:bg-ink-900 hover:text-ink-50 text-ink-900 transition-colors font-mono text-[11px] uppercase tracking-[0.2em] inline-flex items-center gap-1.5"
+            >
+              <X className="w-3 h-3" /> Clear search & filters
+            </button>
           </div>
         ) : (
           <ol className="border-t border-ink-900">
@@ -357,6 +410,7 @@ export default function MedicalDeviceJobSearch() {
                 index={idx}
                 isSaved={savedJobs.includes(job.id)}
                 onToggleSave={() => toggleSave(job.id)}
+                highlight={searchTerm}
               />
             ))}
           </ol>
@@ -413,7 +467,22 @@ function FilterSelect({ label, value, onChange, options }) {
   );
 }
 
-function JobRow({ job, index, isSaved, onToggleSave }) {
+function highlightTerm(text, term) {
+  if (!term || !term.trim() || !text) return text;
+  const tokens = term.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return text;
+  // Escape regex special chars in each token
+  const escaped = tokens.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const re = new RegExp(`(${escaped.join('|')})`, 'gi');
+  const parts = String(text).split(re);
+  return parts.map((part, i) =>
+    i % 2 === 1
+      ? <mark key={i} className="bg-accent/20 text-ink-900 px-0.5 rounded-sm">{part}</mark>
+      : <span key={i}>{part}</span>
+  );
+}
+
+function JobRow({ job, index, isSaved, onToggleSave, highlight }) {
   const num = (index + 1).toString().padStart(3, '0');
   return (
     <li
@@ -430,11 +499,11 @@ function JobRow({ job, index, isSaved, onToggleSave }) {
         <div className="min-w-0">
           <div className="flex items-baseline gap-3 flex-wrap mb-1">
             <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-accent">
-              {job.company}
+              {highlightTerm(job.company, highlight)}
             </span>
             <span className="text-ink-300">·</span>
             <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-ink-500">
-              {job.department}
+              {highlightTerm(job.department, highlight)}
             </span>
           </div>
 
@@ -446,9 +515,9 @@ function JobRow({ job, index, isSaved, onToggleSave }) {
                 rel="noopener noreferrer"
                 className="link-underline"
               >
-                {job.title}
+                {highlightTerm(job.title, highlight)}
               </a>
-            ) : job.title}
+            ) : highlightTerm(job.title, highlight)}
           </h3>
 
           <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-sm text-ink-600">
