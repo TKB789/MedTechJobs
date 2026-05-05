@@ -1,11 +1,11 @@
 {
   "files": {
-    "main.css": "/MedTechJobs/static/css/main.4d818c3e.css",
-    "main.js": "/MedTechJobs/static/js/main.97a6dca0.js",
+    "main.css": "/MedTechJobs/static/css/main.26a62d8f.css",
+    "main.js": "/MedTechJobs/static/js/main.182716fb.js",
     "index.html": "/MedTechJobs/index.html"
   },
   "entrypoints": [
-    "static/css/main.4d818c3e.css",
-    "static/js/main.97a6dca0.js"
+    "static/css/main.26a62d8f.css",
+    "static/js/main.182716fb.js"
   ]
 }
