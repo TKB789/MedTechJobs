@@ -4,11 +4,24 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # Also run automatically after the scraper finishes a successful run.
+  # workflow_run is needed because pushes made by GITHUB_TOKEN (the scraper's
+  # bot commits) do not trigger other workflows on their own.
+  workflow_run:
+    workflows: ["Scrape Medical Device Jobs"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    
+    # When triggered by workflow_run, only proceed if the scraper succeeded.
+    # For push and workflow_dispatch the conclusion is null, which still passes.
+    if: ${{ github.event.workflow_run.conclusion != 'failure' }}
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -16,7 +29,22 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '20'
+
+    - name: Stage scraped data into public/
+      run: |
+        # Find the most recent scraped JSON in the repo root and copy it
+        # into web_app/public/ under a stable name so the React app can fetch it.
+        latest=$(ls -1 medical_device_jobs_*.json 2>/dev/null | sort | tail -1 || true)
+        if [ -n "$latest" ]; then
+          echo "Using $latest as the live data file"
+          cp "$latest" web_app/public/medical_device_jobs.json
+          # Also write a tiny manifest, in case future versions want it
+          printf '{"latest":"medical_device_jobs.json","source":"%s"}\n' "$latest" \
+            > web_app/public/jobs-manifest.json
+        else
+          echo "No scraped JSON found; the site will fall back to demo data."
+        fi
 
     - name: Install dependencies
       working-directory: ./web_app
@@ -34,4 +62,3 @@ jobs:
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./web_app/build
-        cname: 
