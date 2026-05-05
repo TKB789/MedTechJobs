@@ -1,396 +1,349 @@
 """
-Medical Device Company Job Scraper using Scrapy
-Comprehensive list of 50+ major US medical device companies
-FIXED VERSION - Correct Scrapy pipeline syntax
+Medical Device Jobs Scraper — API edition.
+
+Hits Workday's CXS endpoint and Eightfold's SmartApply endpoint directly.
+No HTML scraping, no JS rendering, no XPath. Just JSON in, JSON out.
+
+Adding a new company:
+  - If they're on Workday, find their tenant + site from the careers URL
+    (e.g. https://stryker.wd1.myworkdayjobs.com/StrykerCareers
+     -> tenant="stryker", wd_pod="wd1", site="StrykerCareers") and add a row to
+    WORKDAY_COMPANIES.
+  - If they're on Eightfold (URL looks like https://<slug>.eightfold.ai/careers),
+    add the slug + the company's primary domain to EIGHTFOLD_COMPANIES.
 """
 
-import scrapy
-from scrapy.crawler import CrawlerProcess
-from scrapy.http import Request
-from scrapy import signals
+from __future__ import annotations
+
 import json
-from datetime import datetime
-from typing import Generator
+import os
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Iterable
 
-# Comprehensive list of major US medical device companies
-MEDICAL_DEVICE_COMPANIES = {
-    # Top Tier - Fortune 500
-    "Medtronic": {
-        "url": "https://careers.medtronic.com/jobs/search",
-        "company_id": "medtronic"
-    },
-    "Johnson & Johnson": {
-        "url": "https://careers.jnj.com/jobs",
-        "company_id": "jnj"
-    },
-    "Abbott": {
-        "url": "https://careers.abbott/search-jobs",
-        "company_id": "abbott"
-    },
-    "Thermo Fisher Scientific": {
-        "url": "https://careers.thermofisher.com/jobs",
-        "company_id": "thermo_fisher"
-    },
-    "Danaher": {
-        "url": "https://careers.danaher.com/jobs",
-        "company_id": "danaher"
-    },
-    
-    # Cardiovascular & Interventional
-    "Boston Scientific": {
-        "url": "https://jobs.bostonscientific.com/jobs/search",
-        "company_id": "boston_scientific"
-    },
-    "Edwards Lifesciences": {
-        "url": "https://careers.edwards.com/jobs",
-        "company_id": "edwards"
-    },
-    "Stryker": {
-        "url": "https://careers.stryker.com/jobs",
-        "company_id": "stryker"
-    },
-    "Baxter International": {
-        "url": "https://careers.baxter.com/jobs",
-        "company_id": "baxter"
-    },
-    "LivaNova": {
-        "url": "https://careers.livanova.com/jobs",
-        "company_id": "livanova"
-    },
-    
-    # Orthopedic & Spine
-    "Zimmer Biomet": {
-        "url": "https://jobs.zimmerbiomet.com/jobs",
-        "company_id": "zimmer_biomet"
-    },
-    "Intuitive Surgical": {
-        "url": "https://careers.intuitivesurgical.com/jobs",
-        "company_id": "intuitive"
-    },
-    "NuVasive": {
-        "url": "https://careers.nuvasive.com/jobs",
-        "company_id": "nuvasive"
-    },
-    "Globus Medical": {
-        "url": "https://careers.globusmedical.com/jobs",
-        "company_id": "globus"
-    },
-    
-    # Imaging & Diagnostics
-    "GE Healthcare": {
-        "url": "https://careers.gehealthcare.com/jobs",
-        "company_id": "ge_healthcare"
-    },
-    "Siemens Healthineers": {
-        "url": "https://careers.siemenshealth.com/jobs",
-        "company_id": "siemens"
-    },
-    "Philips Healthcare": {
-        "url": "https://careers.philips.com/jobs",
-        "company_id": "philips"
-    },
-    "Canon Medical": {
-        "url": "https://careers.canonmedical.com/jobs",
-        "company_id": "canon_medical"
-    },
-    "Carestream Health": {
-        "url": "https://careers.carestream.com/jobs",
-        "company_id": "carestream"
-    },
-    
-    # Respiratory & Patient Monitoring
-    "ResMed": {
-        "url": "https://careers.resmed.com/jobs",
-        "company_id": "resmed"
-    },
-    "Vyaire Medical": {
-        "url": "https://careers.vyaire.com/jobs",
-        "company_id": "vyaire"
-    },
-    "Inogen": {
-        "url": "https://careers.inogen.com/jobs",
-        "company_id": "inogen"
-    },
-    
-    # Diagnostic & Laboratory
-    "Becton Dickinson": {
-        "url": "https://careers.bd.com/jobs",
-        "company_id": "bd"
-    },
-    "Accelerate Diagnostics": {
-        "url": "https://careers.axdx.com/jobs",
-        "company_id": "accelerate"
-    },
-    "Hologic": {
-        "url": "https://careers.hologic.com/jobs",
-        "company_id": "hologic"
-    },
-    "Haemonetics": {
-        "url": "https://careers.haemonetics.com/jobs",
-        "company_id": "haemonetics"
-    },
-    
-    # Surgical & Interventional
-    "Conmed": {
-        "url": "https://careers.conmed.com/jobs",
-        "company_id": "conmed"
-    },
-    "Merit Medical Systems": {
-        "url": "https://careers.merit.net/jobs",
-        "company_id": "merit_medical"
-    },
-    "Repro Med Systems": {
-        "url": "https://careers.repromed.com/jobs",
-        "company_id": "repro_med"
-    },
-    
-    # Cardiovascular Diagnostics
-    "Lantheus": {
-        "url": "https://careers.lantheus.com/jobs",
-        "company_id": "lantheus"
-    },
-    "Cardiovascular Systems": {
-        "url": "https://careers.csidev.com/jobs",
-        "company_id": "csi"
-    },
-    "Shockwave Medical": {
-        "url": "https://careers.shockwavemedical.com/jobs",
-        "company_id": "shockwave"
-    },
-    
-    # Dental & Oral
-    "Dentsply Sirona": {
-        "url": "https://careers.dentsplysirona.com/jobs",
-        "company_id": "dentsply"
-    },
-    "Henry Schein": {
-        "url": "https://careers.henryschein.com/jobs",
-        "company_id": "henry_schein"
-    },
-    "Patterson Companies": {
-        "url": "https://careers.pattersoncompanies.com/jobs",
-        "company_id": "patterson"
-    },
-    
-    # Radiation & Oncology
-    "Varian": {
-        "url": "https://careers.varian.com/jobs",
-        "company_id": "varian"
-    },
-    "Sectra": {
-        "url": "https://careers.sectra.com/jobs",
-        "company_id": "sectra"
-    },
-    
-    # Blood Collection & Transfusion
-    "Grifols": {
-        "url": "https://careers.grifols.com/jobs",
-        "company_id": "grifols"
-    },
-    "CSL Limited": {
-        "url": "https://careers.csl.com.au/jobs",
-        "company_id": "csl"
-    },
-    
-    # Wound Care & Tissue
-    "Smith & Nephew": {
-        "url": "https://careers.smith-nephew.com/jobs",
-        "company_id": "smith_nephew"
-    },
-    "Coloplast": {
-        "url": "https://careers.coloplast.com/jobs",
-        "company_id": "coloplast"
-    },
-    "ConvaTec": {
-        "url": "https://careers.convatec.com/jobs",
-        "company_id": "convatec"
-    },
-    
-    # Orthopedic Accessories
-    "DePuy Synthes": {
-        "url": "https://careers.depuysynthes.com/jobs",
-        "company_id": "depuy"
-    },
-    "Arthrex": {
-        "url": "https://careers.arthrex.com/jobs",
-        "company_id": "arthrex"
-    },
-    
-    # Other Major Players
-    "Abiomed": {
-        "url": "https://careers.abiomed.com/jobs",
-        "company_id": "abiomed"
-    },
-    "ATS Medical": {
-        "url": "https://careers.atsmedical.com/jobs",
-        "company_id": "ats_medical"
-    },
-    "Envision Healthcare": {
-        "url": "https://careers.evhc.net/jobs",
-        "company_id": "envision"
-    },
-    "Vascular Solutions": {
-        "url": "https://careers.vascularsolutions.com/jobs",
-        "company_id": "vascular_solutions"
-    },
-}
+import requests
 
 
-class MedicalDeviceJobsSpider(scrapy.Spider):
-    """Spider to scrape medical device company career pages"""
-    
-    name = "medical_device_jobs"
-    allowed_domains = [
-        "careers.medtronic.com", "careers.jnj.com", "careers.abbott.com",
-        "jobs.bostonscientific.com", "careers.baxter.com", "careers.bd.com",
-        "careers.stryker.com", "jobs.zimmerbiomet.com", "careers.abiomed.com",
-        "careers.lantheus.com", "careers.merit.net", "careers.repromed.com",
-        "careers.csidev.com", "careers.shockwavemedical.com",
-        "careers.intuitivesurgical.com", "careers.danaher.com",
-        "careers.siemenshealth.com", "careers.gehealthcare.com",
-        "careers.philips.com", "careers.canonmedical.com", "careers.conmed.com",
-        "careers.varian.com", "careers.sectra.com", "careers.inogen.com",
-        "careers.resmed.com", "careers.vyaire.com", "careers.atsmedical.com",
-        "careers.livanova.com", "careers.axdx.com", "careers.haemonetics.com",
-        "careers.edwards.com", "careers.nuvasive.com", "careers.globusmedical.com",
-        "careers.carestream.com", "careers.hologic.com",
-        "careers.dentsplysirona.com", "careers.henryschein.com",
-        "careers.pattersoncompanies.com", "careers.grifols.com", "careers.csl.com.au",
-        "careers.smith-nephew.com", "careers.coloplast.com", "careers.convatec.com",
-        "careers.depuysynthes.com", "careers.arthrex.com",
-        "careers.evhc.net", "careers.vasculalsolutions.com", "careers.thermofisher.com",
-    ]
+# ---------------------------------------------------------------------------
+# Config — verified careers platforms for major medical-device companies.
+# ---------------------------------------------------------------------------
 
-    custom_settings = {
-        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'ROBOTSTXT_OBEY': True,
-        'CONCURRENT_REQUESTS': 4,
-        'DOWNLOAD_DELAY': 2,
-        'COOKIES_ENABLED': True,
-        'REFERER_ENABLED': True,
-        'AUTOTHROTTLE_ENABLED': True,
-        'AUTOTHROTTLE_START_DELAY': 1,
-        'AUTOTHROTTLE_MAX_DELAY': 10,
-    }
+@dataclass(frozen=True)
+class WorkdayTarget:
+    company: str       # display name
+    tenant: str        # e.g. "stryker"
+    wd_pod: str        # e.g. "wd1", "wd5"
+    site: str          # e.g. "StrykerCareers"
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.jobs = []
 
-    def start_requests(self) -> Generator[Request, None, None]:
-        """Generate initial requests for all companies"""
-        for company_name, company_data in MEDICAL_DEVICE_COMPANIES.items():
-            yield scrapy.Request(
-                url=company_data['url'],
-                callback=self.parse_listing,
-                meta={'company_name': company_name, 'company_id': company_data['company_id']},
-                dont_obey_robotstxt=False,
-                errback=self.errback
+@dataclass(frozen=True)
+class EightfoldTarget:
+    company: str       # display name
+    slug: str          # subdomain on eightfold.ai
+    domain: str        # company's primary domain, used as ?domain= param
+
+
+# Verified URLs as of May 2026.
+WORKDAY_COMPANIES: list[WorkdayTarget] = [
+    WorkdayTarget("Medtronic",            "medtronic", "wd1", "MedtronicCareers"),
+    WorkdayTarget("Stryker",              "stryker",   "wd1", "StrykerCareers"),
+    WorkdayTarget("Edwards Lifesciences", "edwards",   "wd5", "edwardscareers"),
+    WorkdayTarget("Abbott",               "abbott",    "wd5", "abbottcareers"),
+    WorkdayTarget("ResMed",               "resmed",    "wd3", "ResMed_External_Careers"),
+]
+
+EIGHTFOLD_COMPANIES: list[EightfoldTarget] = [
+    EightfoldTarget("Boston Scientific", "bostonscientific", "bostonscientific.com"),
+]
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers
+# ---------------------------------------------------------------------------
+
+USER_AGENT = (
+    "Mozilla/5.0 (compatible; MedTechLedgerBot/1.0; "
+    "+https://github.com/tkb789/MedTechJobs)"
+)
+
+REQUEST_TIMEOUT = 25         # seconds
+PAGE_DELAY      = 0.6        # seconds between paginated calls per company
+COMPANY_DELAY   = 1.5        # seconds between companies
+
+
+def _session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent":   USER_AGENT,
+        "Accept":       "application/json",
+        "Content-Type": "application/json",
+    })
+    return s
+
+
+# ---------------------------------------------------------------------------
+# Workday CXS
+#
+# POST https://<tenant>.<pod>.myworkdayjobs.com/wday/cxs/<tenant>/<site>/jobs
+# Body: {"appliedFacets": {}, "limit": N, "offset": M, "searchText": ""}
+# Response: { total: int, jobPostings: [ {title, locationsText, postedOn,
+#                                        externalPath, timeType, bulletFields} ] }
+# ---------------------------------------------------------------------------
+
+WORKDAY_PAGE_SIZE = 20
+WORKDAY_MAX_JOBS_PER_COMPANY = 200   # safety cap so a giant tenant can't dominate
+
+
+def fetch_workday(session: requests.Session, target: WorkdayTarget) -> list[dict]:
+    base = f"https://{target.tenant}.{target.wd_pod}.myworkdayjobs.com"
+    api  = f"{base}/wday/cxs/{target.tenant}/{target.site}/jobs"
+    site_url = f"{base}/{target.site}"
+
+    out: list[dict] = []
+    offset = 0
+    total: int | None = None
+
+    while True:
+        body = {
+            "appliedFacets": {},
+            "limit":      WORKDAY_PAGE_SIZE,
+            "offset":     offset,
+            "searchText": "",
+        }
+        try:
+            r = session.post(api, json=body, timeout=REQUEST_TIMEOUT,
+                             headers={"Referer": site_url})
+        except requests.RequestException as e:
+            print(f"  ⚠ {target.company}: network error at offset {offset}: {e}",
+                  file=sys.stderr)
+            break
+
+        if r.status_code != 200:
+            print(f"  ⚠ {target.company}: HTTP {r.status_code} at offset {offset}",
+                  file=sys.stderr)
+            break
+
+        try:
+            data = r.json()
+        except ValueError:
+            print(f"  ⚠ {target.company}: non-JSON response at offset {offset}",
+                  file=sys.stderr)
+            break
+
+        postings = data.get("jobPostings") or []
+        if total is None:
+            total = data.get("total")
+
+        for p in postings:
+            ext = p.get("externalPath", "")
+            if ext and not ext.startswith("/"):
+                ext = "/" + ext
+            out.append({
+                "company_name": target.company,
+                "company_id":   target.tenant,
+                "job_title":    (p.get("title") or "").strip(),
+                "job_link":     site_url + ext if ext else site_url,
+                "location":     (p.get("locationsText") or "Not specified").strip(),
+                "department":   "Not specified",   # Workday doesn't expose this in CXS
+                "jobType":      (p.get("timeType") or "Not specified").strip(),
+                "posting_date": (p.get("postedOn") or "").strip(),
+                "scraped_date": datetime.now(timezone.utc).isoformat(),
+                "source":       "workday",
+            })
+
+        if not postings:
+            break
+        offset += len(postings)
+        if total is not None and offset >= total:
+            break
+        if offset >= WORKDAY_MAX_JOBS_PER_COMPANY:
+            break
+        time.sleep(PAGE_DELAY)
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Eightfold SmartApply
+#
+# GET https://<slug>.eightfold.ai/api/apply/v2/jobs?domain=<domain>&start=<n>&num=<m>
+# Response: { count: int, positions: [ {id, name, location, department,
+#                                       t_create, canonicalPositionUrl, ...} ] }
+# ---------------------------------------------------------------------------
+
+EIGHTFOLD_PAGE_SIZE = 25
+EIGHTFOLD_MAX_JOBS_PER_COMPANY = 200
+
+
+def fetch_eightfold(session: requests.Session, target: EightfoldTarget) -> list[dict]:
+    base = f"https://{target.slug}.eightfold.ai"
+    api  = f"{base}/api/apply/v2/jobs"
+
+    out: list[dict] = []
+    start = 0
+    seen_ids: set[str] = set()
+
+    while True:
+        params = {
+            "domain": target.domain,
+            "start":  start,
+            "num":    EIGHTFOLD_PAGE_SIZE,
+            "hl":     "en",
+        }
+        try:
+            r = session.get(api, params=params, timeout=REQUEST_TIMEOUT,
+                            headers={"Referer": f"{base}/careers"})
+        except requests.RequestException as e:
+            print(f"  ⚠ {target.company}: network error at start {start}: {e}",
+                  file=sys.stderr)
+            break
+
+        if r.status_code != 200:
+            print(f"  ⚠ {target.company}: HTTP {r.status_code} at start {start}",
+                  file=sys.stderr)
+            break
+
+        try:
+            data = r.json()
+        except ValueError:
+            print(f"  ⚠ {target.company}: non-JSON response at start {start}",
+                  file=sys.stderr)
+            break
+
+        positions = data.get("positions") or []
+        if not positions:
+            break
+
+        new_in_page = 0
+        for p in positions:
+            pid = str(p.get("id") or "")
+            if pid and pid in seen_ids:    # Eightfold sometimes loops; bail if it does
+                continue
+            if pid:
+                seen_ids.add(pid)
+            new_in_page += 1
+
+            link = p.get("canonicalPositionUrl") or (
+                f"{base}/careers/job/{pid}?domain={target.domain}" if pid else f"{base}/careers"
             )
 
-    def parse_listing(self, response):
-        """Parse job listing pages"""
-        company_name = response.meta['company_name']
-        company_id = response.meta['company_id']
+            # Eightfold gives a unix timestamp in t_create; some tenants use seconds, some ms.
+            posted_iso = ""
+            t_create = p.get("t_create")
+            if isinstance(t_create, (int, float)) and t_create > 0:
+                ts = t_create / 1000.0 if t_create > 10_000_000_000 else t_create
+                try:
+                    posted_iso = datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+                except (OverflowError, OSError, ValueError):
+                    posted_iso = ""
 
-        # Generic selectors
-        job_selectors = [
-            '//div[@class*="job"]',
-            '//div[@class*="position"]',
-            '//li[@class*="job"]',
-            '//article[@class*="job"]',
-        ]
+            out.append({
+                "company_name": target.company,
+                "company_id":   target.slug,
+                "job_title":    (p.get("name") or "").strip(),
+                "job_link":     link,
+                "location":     (p.get("location") or "Not specified").strip(),
+                "department":   (p.get("department") or "Not specified").strip(),
+                "jobType":      (p.get("employment_type")
+                                 or p.get("position_type")
+                                 or "Not specified").strip(),
+                "posting_date": posted_iso,
+                "scraped_date": datetime.now(timezone.utc).isoformat(),
+                "source":       "eightfold",
+            })
 
-        jobs_found = 0
+        if new_in_page == 0:
+            break
+        start += len(positions)
+        if start >= EIGHTFOLD_MAX_JOBS_PER_COMPANY:
+            break
+        total = data.get("count")
+        if isinstance(total, int) and start >= total:
+            break
+        time.sleep(PAGE_DELAY)
 
-        for selector in job_selectors:
-            jobs = response.xpath(selector)
-            if jobs:
-                for job in jobs:
-                    job_title = job.xpath('.//h2/text() | .//h3/text() | .//a[@class*="title"]/text()').get('')
-                    job_link = job.xpath('.//a/@href | .//a[@class*="link"]/@href').get('')
-                    location = job.xpath('.//span[@class*="location"]/text() | .//div[@class*="location"]/text()').get('')
-                    department = job.xpath('.//span[@class*="department"]/text() | .//div[@class*="category"]/text()').get('')
-                    job_type = job.xpath('.//span[@class*="type"]/text() | .//span[@class*="employment"]/text()').get('')
-                    posting_date = job.xpath('.//time/@datetime | .//span[@class*="date"]/text()').get('')
-
-                    if job_title:
-                        jobs_found += 1
-                        job_data = {
-                            'company_name': company_name,
-                            'company_id': company_id,
-                            'job_title': job_title.strip(),
-                            'job_link': response.urljoin(job_link) if job_link else '',
-                            'location': location.strip() if location else 'Not specified',
-                            'department': department.strip() if department else 'Not specified',
-                            'jobType': job_type.strip() if job_type else 'Not specified',
-                            'posting_date': posting_date.strip() if posting_date else '',
-                            'scraped_date': datetime.now().isoformat(),
-                        }
-                        self.jobs.append(job_data)
-                        yield job_data
-                break
-
-        if jobs_found == 0:
-            self.logger.warning(f"Could not parse jobs for {company_name}")
-
-    def errback(self, failure):
-        """Handle request errors"""
-        self.logger.error(f"Request failed: {failure.value}")
+    return out
 
 
-def run_scraper():
-    """Execute the scraper"""
-    
-    # Store jobs in a list
-    jobs_list = []
-    
-    class CustomPipeline:
-        def process_item(self, item, spider):
-            jobs_list.append(dict(item))
-            return item
-    
-    # Configure and run
-    process = CrawlerProcess({
-        'ITEM_PIPELINES': {
-            '__main__.CustomPipeline': 300,
-        },
-        'LOG_LEVEL': 'INFO',
-    })
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
 
-    # Create and run spider
-    spider = MedicalDeviceJobsSpider()
-    process.crawl(MedicalDeviceJobsSpider)
-    process.start()
-
-    # Save results
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f'medical_device_jobs_{timestamp}.json'
-
-    try:
-        with open(filename, 'w') as f:
-            json.dump(spider.jobs if spider.jobs else jobs_list, f, indent=2, default=str)
-
-        print(f"\n✅ SUCCESS: Created {filename}")
-        print(f"📊 Total jobs collected: {len(spider.jobs or jobs_list)}")
-        print(f"🏢 Companies scraped: {len(set(job.get('company_name') for job in (spider.jobs or jobs_list)))}")
-        return True
-
-    except Exception as e:
-        print(f"\n❌ ERROR: Failed to save jobs: {e}")
-        return False
+def all_targets() -> Iterable[tuple[str, object]]:
+    for w in WORKDAY_COMPANIES:
+        yield "workday", w
+    for e in EIGHTFOLD_COMPANIES:
+        yield "eightfold", e
 
 
-if __name__ == '__main__':
+def run() -> int:
+    started = datetime.now(timezone.utc)
     print("=" * 70)
-    print("Medical Device Jobs Scraper - FIXED VERSION")
-    print("=" * 70)
-    print(f"Starting at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Scraping {len(MEDICAL_DEVICE_COMPANIES)} companies...")
+    print("MedTech Ledger — Job Scraper")
+    print(f"Started:    {started.isoformat()}")
+    print(f"Targets:    {len(WORKDAY_COMPANIES)} Workday + "
+          f"{len(EIGHTFOLD_COMPANIES)} Eightfold = "
+          f"{len(WORKDAY_COMPANIES) + len(EIGHTFOLD_COMPANIES)} total")
     print("=" * 70)
 
-    run_scraper()
+    session = _session()
+    all_jobs: list[dict] = []
+    per_company: list[tuple[str, int]] = []
 
+    for kind, target in all_targets():
+        company = target.company  # type: ignore[attr-defined]
+        print(f"→ {company:30s} ({kind})", end=" ", flush=True)
+
+        try:
+            if kind == "workday":
+                jobs = fetch_workday(session, target)  # type: ignore[arg-type]
+            else:
+                jobs = fetch_eightfold(session, target)  # type: ignore[arg-type]
+        except Exception as e:           # noqa: BLE001 — never let one site kill the run
+            print(f"FAILED ({type(e).__name__}: {e})")
+            per_company.append((company, 0))
+            continue
+
+        # Drop empty-title rows defensively
+        jobs = [j for j in jobs if j.get("job_title")]
+        all_jobs.extend(jobs)
+        per_company.append((company, len(jobs)))
+        print(f"{len(jobs):>4} jobs")
+        time.sleep(COMPANY_DELAY)
+
+    # Sort: most recent first, then by company
+    def sort_key(j: dict):
+        return (j.get("posting_date") or "", j.get("company_name") or "")
+    all_jobs.sort(key=sort_key, reverse=True)
+
+    finished = datetime.now(timezone.utc)
     print("=" * 70)
-    print("Scraping complete!")
+    print("Per-company results:")
+    for name, n in per_company:
+        print(f"  {name:30s} {n:>4}")
+    print("-" * 70)
+    print(f"Total jobs:  {len(all_jobs)}")
+    print(f"Finished:    {finished.isoformat()}")
+    print(f"Duration:    {(finished - started).total_seconds():.1f}s")
     print("=" * 70)
+
+    # Always write a file, even if empty, so downstream steps have something
+    # deterministic to find.
+    timestamp = started.strftime("%Y%m%d_%H%M%S")
+    out_path = f"medical_device_jobs_{timestamp}.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(all_jobs, f, indent=2, ensure_ascii=False)
+    print(f"Wrote: {out_path} ({os.path.getsize(out_path):,} bytes)")
+
+    # Non-zero exit if every single source failed — surfaces issues in CI
+    # without blocking partial-success runs.
+    if all(n == 0 for _, n in per_company) and per_company:
+        print("ERROR: every source returned zero jobs", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(run())
