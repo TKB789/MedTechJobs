@@ -4,77 +4,99 @@ on:
   schedule:
     # Run every day at 2 AM UTC (10 PM EST / 7 PM PST)
     - cron: '0 2 * * *'
-  
   # Allow manual trigger
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Python 3.10
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-    
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install scrapy requests lxml cssselect python-dateutil
-    
+
     - name: Run Medical Device Jobs Scraper
       id: scraper
       run: |
         echo "Starting scraper..."
         python scrapy_spider/medical_device_jobs_scraper.py
         echo "Scraper finished"
-        
-        # Check what files were created
+
         echo ""
         echo "Files created:"
         ls -lh medical_device_jobs_*.json 2>/dev/null || echo "⚠️ No job files found"
       continue-on-error: true
-    
-    - name: Check and display results
+
+    - name: Stage latest scrape into web_app/public/
+      id: stage
       run: |
-        echo "Current directory contents:"
-        ls -la
-        
-        echo ""
-        echo "JSON files found:"
-        if ls medical_device_jobs_*.json 1> /dev/null 2>&1; then
-          echo "✅ Job files created successfully"
-          for file in medical_device_jobs_*.json; do
-            echo "  - $file"
-            wc -l "$file"
-          done
-        else
-          echo "⚠️ No job files found - scraper may have encountered issues"
+        # Pick the most recent scraped JSON. Filenames embed YYYYMMDD_HHMMSS,
+        # so a lexicographic sort is also chronological.
+        latest=$(ls -1 medical_device_jobs_*.json 2>/dev/null | sort | tail -1 || true)
+
+        if [ -z "$latest" ]; then
+          echo "⚠️ No scraped JSON to stage — the previous version stays live."
+          echo "staged=false" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
-    
+
+        echo "Staging $latest as web_app/public/medical_device_jobs.json"
+        mkdir -p web_app/public
+        cp "$latest" web_app/public/medical_device_jobs.json
+
+        # Small manifest so the UI can show provenance if it wants to.
+        cat > web_app/public/jobs-manifest.json <<EOF
+        {
+          "latest": "medical_device_jobs.json",
+          "source": "$latest",
+          "scraped_at_utc": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+        }
+        EOF
+
+        echo "staged=true" >> "$GITHUB_OUTPUT"
+
+    - name: Show what changed
+      run: |
+        echo "Files in web_app/public/:"
+        ls -lh web_app/public/ || true
+        echo ""
+        echo "Top-level scraped files:"
+        ls -lh medical_device_jobs_*.json 2>/dev/null || echo "(none)"
+
     - name: Configure git
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action Bot"
-    
+
     - name: Commit and push job data
-      id: commit
       run: |
-        if ls medical_device_jobs_*.json 1> /dev/null 2>&1; then
-          echo "Found job files, committing..."
-          git add medical_device_jobs_*.json
-          git commit -m "🔄 Automated job scrape - $(date +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
-          git push
-          echo "✅ Job files committed and pushed"
-        else
-          echo "⚠️ No job files to commit"
+        # Stage both the timestamped archive at repo root and the live copies in public/.
+        git add medical_device_jobs_*.json 2>/dev/null || true
+        git add web_app/public/medical_device_jobs.json 2>/dev/null || true
+        git add web_app/public/jobs-manifest.json 2>/dev/null || true
+
+        if git diff --staged --quiet; then
+          echo "No changes to commit."
           exit 0
         fi
-    
+
+        git commit -m "🔄 Automated job scrape — $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+        git push
+        echo "✅ Pushed updated job data; deploy workflow will rebuild the site."
+
     - name: Summary
       if: always()
       run: |
@@ -83,16 +105,6 @@ jobs:
         echo "SCRAPER WORKFLOW SUMMARY"
         echo "=========================================="
         echo "Status: ${{ job.status }}"
-        echo "Time: $(date +'%Y-%m-%d %H:%M:%S UTC')"
-        echo ""
-        
-        if ls medical_device_jobs_*.json 1> /dev/null 2>&1; then
-          echo "✅ Jobs successfully scraped and saved"
-          echo "Files: $(ls -1 medical_device_jobs_*.json | wc -l)"
-          echo "Total lines: $(cat medical_device_jobs_*.json | wc -l)"
-        else
-          echo "⚠️ No job files created"
-          echo "Check logs above for errors"
-        fi
-        
+        echo "Staged into public/: ${{ steps.stage.outputs.staged }}"
+        echo "Time: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
         echo "=========================================="
