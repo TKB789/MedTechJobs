@@ -7,6 +7,7 @@ export default function MedicalDeviceJobSearch() {
   const [savedJobs, setSavedJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataSource, setDataSource] = useState('demo');
+  const [lastUpdate, setLastUpdate] = useState(null);
   const [filters, setFilters] = useState({
     searchTerm: '',
     company: '',
@@ -70,47 +71,103 @@ export default function MedicalDeviceJobSearch() {
       try {
         setLoading(true);
         
-        // Try to load from multiple possible locations
+        // Try to load from GitHub API - gets the latest commit in the repo
+        // This will find the most recent medical_device_jobs_*.json file
+        try {
+          // Get the repository contents
+          const repoResponse = await fetch(
+            'https://api.github.com/repos/YOUR-USERNAME/YOUR-REPO-NAME/contents/',
+            {
+              headers: {
+                'Accept': 'application/vnd.github.v3.raw'
+              }
+            }
+          );
+
+          if (repoResponse.ok) {
+            const contents = await repoResponse.json();
+            
+            // Find all job files
+            const jobFiles = contents
+              .filter(item => item.name.startsWith('medical_device_jobs_') && item.name.endsWith('.json'))
+              .sort((a, b) => new Date(b.commit.committer.date) - new Date(a.commit.committer.date));
+
+            if (jobFiles.length > 0) {
+              // Get the latest file
+              const latestFile = jobFiles[0];
+              const fileResponse = await fetch(latestFile.download_url);
+              
+              if (fileResponse.ok) {
+                const loadedJobs = await fileResponse.json();
+                
+                // Normalize field names
+                const normalizedJobs = loadedJobs.map((job, index) => ({
+                  id: job.id || index + 1,
+                  title: job.title || job.job_title || 'Untitled',
+                  company: job.company || job.company_name || 'Unknown',
+                  location: job.location || 'Not specified',
+                  department: job.department || 'Not specified',
+                  jobType: job.jobType || job.job_type || 'Not specified',
+                  postedDate: job.postedDate || job.posting_date || new Date().toISOString().split('T')[0],
+                  job_link: job.job_link || ''
+                }));
+
+                setJobs(normalizedJobs);
+                setFilteredJobs(normalizedJobs);
+                setDataSource('real');
+                setLastUpdate(latestFile.name);
+                console.log(`✅ Loaded ${normalizedJobs.length} real jobs from ${latestFile.name}`);
+                return;
+              }
+            }
+          }
+        } catch (error) {
+          console.log('Could not load from GitHub API, trying alternative methods...');
+        }
+
+        // Alternative: Try to load from public JSON file in repo
         const possiblePaths = [
           '/medical_device_jobs.json',
           'medical_device_jobs.json',
-          '/data/medical_device_jobs.json',
-          'https://raw.githubusercontent.com/YOUR_REPO_DATA/main/medical_device_jobs.json'
+          '/docs/medical_device_jobs.json',
         ];
 
-        let loadedJobs = null;
-
-        // Try each path
         for (const path of possiblePaths) {
           try {
             const response = await fetch(path);
             if (response.ok) {
-              loadedJobs = await response.json();
+              const loadedJobs = await response.json();
+              
+              const normalizedJobs = loadedJobs.map((job, index) => ({
+                id: job.id || index + 1,
+                title: job.title || job.job_title || 'Untitled',
+                company: job.company || job.company_name || 'Unknown',
+                location: job.location || 'Not specified',
+                department: job.department || 'Not specified',
+                jobType: job.jobType || job.job_type || 'Not specified',
+                postedDate: job.postedDate || job.posting_date || new Date().toISOString().split('T')[0],
+                job_link: job.job_link || ''
+              }));
+
+              setJobs(normalizedJobs);
+              setFilteredJobs(normalizedJobs);
               setDataSource('real');
-              console.log(`Loaded ${loadedJobs.length} jobs from ${path}`);
-              break;
+              setLastUpdate('Loaded from ' + path);
+              console.log(`✅ Loaded ${normalizedJobs.length} real jobs from ${path}`);
+              return;
             }
           } catch (e) {
             continue;
           }
         }
 
-        // If no real data found, use demo
-        if (!loadedJobs || loadedJobs.length === 0) {
-          loadedJobs = demoJobs;
-          setDataSource('demo');
-          console.log('Using demo data');
-        }
+        // No real data found, use demo
+        setJobs(demoJobs);
+        setFilteredJobs(demoJobs);
+        setDataSource('demo');
+        setLastUpdate('Demo data - Waiting for scraper');
+        console.log('Using demo data. Real data will load after scraper runs.');
 
-        // Add IDs if missing
-        const jobsWithIds = loadedJobs.map((job, index) => ({
-          ...job,
-          id: job.id || index + 1,
-          postedDate: job.postedDate || job.posting_date || new Date().toISOString().split('T')[0]
-        }));
-
-        setJobs(jobsWithIds);
-        setFilteredJobs(jobsWithIds);
       } catch (error) {
         console.error('Error loading jobs:', error);
         setJobs(demoJobs);
@@ -200,8 +257,9 @@ export default function MedicalDeviceJobSearch() {
           </div>
           <p className="text-blue-100 text-lg">Find your next opportunity in medical technology</p>
           <p className="text-blue-200 text-sm mt-2">
-            {dataSource === 'real' ? '✅ Real job data from scraped results' : '📊 Demo data (upload real data to replace)'}
+            {dataSource === 'real' ? `✅ Real job data (${jobs.length} jobs)` : '📊 Demo data (waiting for scraper)'}
           </p>
+          {lastUpdate && <p className="text-blue-300 text-xs mt-1">{lastUpdate}</p>}
         </div>
       </header>
 
@@ -410,8 +468,8 @@ export default function MedicalDeviceJobSearch() {
               </h3>
               <p className="text-slate-300 text-sm">
                 {dataSource === 'real'
-                  ? 'Showing real job data from scraped results. New jobs added daily at 2 AM UTC.'
-                  : 'Currently showing demo data. The scraper will collect real jobs daily. First scrape happens at 2 AM UTC.'}
+                  ? `Showing ${jobs.length} real jobs from scraped results. Updates every day at 2 AM UTC.`
+                  : 'Currently showing demo data. The scraper will collect real jobs starting at 2 AM UTC tomorrow. Check back after the first scrape!'}
               </p>
             </div>
           </div>
