@@ -1,15 +1,17 @@
 name: Discover FDA Companies
 
-# Stage 1 of the discovery pipeline. Downloads the FDA Establishment Registration
-# files, runs fetch_fda_companies.py, and commits companies.csv back to the repo.
+# Stage 1 of the discovery pipeline.
+# Pulls US medical-device-manufacturer data from openFDA, aggregates by
+# owner-operator, and commits companies.csv back to the repo.
 #
-# Manual-only by default. Once you trust the output, uncomment the schedule block
-# below to run weekly on Monday morning (FDA refreshes the files every Sunday night).
+# openFDA does not block GitHub Actions and does not require an API key for
+# this workload, but if you set OPENFDA_API_KEY as a repo secret the script
+# will use it for higher rate limits.
 
 on:
   workflow_dispatch:
 
-  # Uncomment to run weekly on Mondays at 06:00 UTC.
+  # Uncomment after you trust the output to refresh weekly.
   # schedule:
   #   - cron: '0 6 * * 1'
 
@@ -35,25 +37,21 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r discovery/requirements.txt
 
-    # Cache the downloaded FDA ZIPs across runs so we don't re-download 50 MB
-    # every single time. The cache key changes weekly so we still get fresh data
-    # at least once a week. Within a single week, repeated manual runs are fast.
-    - name: Cache FDA downloads
-      uses: actions/cache@v4
-      with:
-        path: discovery/fda_cache
-        key: fda-files-${{ github.run_id }}
-        restore-keys: |
-          fda-files-
-
     - name: Run discovery
       working-directory: ./discovery
+      env:
+        OPENFDA_API_KEY: ${{ secrets.OPENFDA_API_KEY }}
       run: |
         python fetch_fda_companies.py 2>&1 | tee discovery_log.txt
         echo ""
         echo "=== output stats ==="
-        wc -l companies.csv
-        ls -lh companies.csv
+        if [ -f companies.csv ]; then
+          wc -l companies.csv
+          ls -lh companies.csv
+        else
+          echo "❌ companies.csv was not produced"
+          exit 1
+        fi
 
     - name: Build job summary
       if: always()
@@ -66,28 +64,28 @@ jobs:
             total=$(($(wc -l < companies.csv) - 1))
             echo "**Total companies:** $total"
             echo ""
-            echo "### Top 20 by device count"
+            echo "### Top 30 by device count"
             echo ""
-            echo "| # | Company | Devices | Facilities | States |"
-            echo "|---|---------|---------|------------|--------|"
-            tail -n +2 companies.csv \
-              | head -20 \
-              | awk -F',' '{
-                  rank++
-                  # crude CSV parse — fine for the columns we care about
-                  printf("| %d | %s | %s | %s | %s |\n",
-                         rank, $1, $5, $4, $2)
-                }'
+            echo "| # | Company | Devices | US Facilities | States |"
+            echo "|---|---------|---------|---------------|--------|"
+            tail -n +2 companies.csv | head -30 | awk -F',' '
+              {
+                rank++
+                # crude CSV parse — fine for these columns since they don'\''t contain commas
+                printf("| %d | %s | %s | %s | %s |\n",
+                       rank, $1, $5, $4, $2)
+              }
+            '
             echo ""
             echo "<details><summary>Run log</summary>"
             echo ""
             echo '```'
-            cat discovery_log.txt
+            tail -100 discovery_log.txt
             echo '```'
             echo ""
             echo "</details>"
           else
-            echo "❌ companies.csv was not produced. See logs for details."
+            echo "❌ companies.csv was not produced. See logs above."
           fi
         } >> "$GITHUB_STEP_SUMMARY"
 
@@ -99,14 +97,11 @@ jobs:
     - name: Commit companies.csv
       working-directory: ./discovery
       run: |
-        # Don't commit the FDA cache — it's large and lives in actions/cache instead.
         git add companies.csv 2>/dev/null || true
-
         if git diff --staged --quiet; then
           echo "No changes to companies.csv."
           exit 0
         fi
-
         git commit -m "📋 Refresh FDA company list — $(date -u +'%Y-%m-%d')"
         git push
         echo "✅ Committed updated companies.csv"
