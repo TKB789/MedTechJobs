@@ -1,0 +1,122 @@
+name: Discover FDA Companies
+
+# Stage 1 of the discovery pipeline. Downloads the FDA Establishment Registration
+# files, runs fetch_fda_companies.py, and commits companies.csv back to the repo.
+#
+# Manual-only by default. Once you trust the output, uncomment the schedule block
+# below to run weekly on Monday morning (FDA refreshes the files every Sunday night).
+
+on:
+  workflow_dispatch:
+
+  # Uncomment to run weekly on Mondays at 06:00 UTC.
+  # schedule:
+  #   - cron: '0 6 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r discovery/requirements.txt
+
+    # Cache the downloaded FDA ZIPs across runs so we don't re-download 50 MB
+    # every single time. The cache key changes weekly so we still get fresh data
+    # at least once a week. Within a single week, repeated manual runs are fast.
+    - name: Cache FDA downloads
+      uses: actions/cache@v4
+      with:
+        path: discovery/fda_cache
+        key: fda-files-${{ github.run_id }}
+        restore-keys: |
+          fda-files-
+
+    - name: Run discovery
+      working-directory: ./discovery
+      run: |
+        python fetch_fda_companies.py 2>&1 | tee discovery_log.txt
+        echo ""
+        echo "=== output stats ==="
+        wc -l companies.csv
+        ls -lh companies.csv
+
+    - name: Build job summary
+      if: always()
+      working-directory: ./discovery
+      run: |
+        {
+          echo "## FDA company discovery"
+          echo ""
+          if [ -f companies.csv ]; then
+            total=$(($(wc -l < companies.csv) - 1))
+            echo "**Total companies:** $total"
+            echo ""
+            echo "### Top 20 by device count"
+            echo ""
+            echo "| # | Company | Devices | Facilities | States |"
+            echo "|---|---------|---------|------------|--------|"
+            tail -n +2 companies.csv \
+              | head -20 \
+              | awk -F',' '{
+                  rank++
+                  # crude CSV parse — fine for the columns we care about
+                  printf("| %d | %s | %s | %s | %s |\n",
+                         rank, $1, $5, $4, $2)
+                }'
+            echo ""
+            echo "<details><summary>Run log</summary>"
+            echo ""
+            echo '```'
+            cat discovery_log.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          else
+            echo "❌ companies.csv was not produced. See logs for details."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Configure git
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name  "GitHub Action Bot"
+
+    - name: Commit companies.csv
+      working-directory: ./discovery
+      run: |
+        # Don't commit the FDA cache — it's large and lives in actions/cache instead.
+        git add companies.csv 2>/dev/null || true
+
+        if git diff --staged --quiet; then
+          echo "No changes to companies.csv."
+          exit 0
+        fi
+
+        git commit -m "📋 Refresh FDA company list — $(date -u +'%Y-%m-%d')"
+        git push
+        echo "✅ Committed updated companies.csv"
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fda-discovery-output
+        path: |
+          discovery/companies.csv
+          discovery/discovery_log.txt
+        retention-days: 30
