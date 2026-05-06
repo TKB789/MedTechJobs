@@ -1,46 +1,46 @@
 """
-Stage 1: Discover US medical device companies from FDA's Establishment Registration & Listing data.
+Stage 1: Discover US medical device companies via the openFDA API.
+
+Why openFDA instead of bulk download
+------------------------------------
+FDA's bulk-download host (accessdata.fda.gov) blocks GitHub Actions IP ranges
+with abuse-detection 404s. openFDA at api.fda.gov is purpose-built for
+programmatic access, returns clean JSON, and exposes the same registration
+data with the joins already done.
 
 What this script does
 ---------------------
-1. Downloads six pipe-separated ZIP files from FDA's public download page.
-2. Joins them: Registration ↔ Owner_Operator ↔ Listing_Estabtypes ↔ Registration_Listing.
+1. Pages through https://api.fda.gov/device/registrationlisting.json filtered
+   to US establishments only.
+2. Each record represents one establishment and includes:
+     - firm_name + owner_operator.firm_name + owner_operator_number
+     - establishment_type (a list — same establishment can be Mfr, SpecDev, etc.)
+     - iso_country_code, state_code, city, address_1
+     - products: [{ product_code, openfda: {device_name, ...} }, ...]
 3. Filters to:
-   • US-based establishments (ISO country code = 'US')
-   • Establishment type 'Manufacture Medical Device' (5) or 'Develop Specifications' (9).
-     These two types are real device makers; everything else (sterilizers, importers,
-     repackagers, contract manufacturers for someone else's device) is excluded.
-   • Companies with >= MIN_DEVICE_LISTINGS distinct device listings.
-4. Aggregates by owner_operator_number — the FDA's "same legal entity" key. This
-   correctly folds together "Medtronic Inc.", "Medtronic USA, Inc.", and the dozens
-   of Medtronic facilities under one company.
-5. Writes companies.csv with one row per company, sorted by device count.
+     - US country code
+     - establishment_type containing "Manufacture Medical Device" OR
+       "Develop Specifications But Do Not Manufacture At This Facility"
+4. Aggregates by owner_operator_number (FDA's "same legal entity" key).
+5. Drops obvious junk (individual practitioners, dental labs, clinics).
+6. Filters to companies with >= MIN_DEVICE_LISTINGS distinct products.
+7. Writes companies.csv sorted by device count.
 
 Output schema
 -------------
-name, state, primary_city, num_us_facilities, num_devices, owner_op_number,
-sample_facility_address, source
-
-Run it
-------
-    python fetch_fda_companies.py
-The script caches downloaded ZIPs in ./fda_cache/ so re-runs are fast.
-The output is written to ./companies.csv next to this script.
-
-This script does NOT find websites. That's stage 2 (enrich_websites.py).
+name, state, primary_city, num_us_facilities, num_devices,
+owner_op_number, sample_facility_address, source
 """
 
 from __future__ import annotations
 
 import csv
-import io
 import os
 import re
 import sys
-import zipfile
+import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Iterator
 
 import requests
 
@@ -49,22 +49,22 @@ import requests
 # Config
 # ---------------------------------------------------------------------------
 
-MIN_DEVICE_LISTINGS = 5             # filter threshold
-US_COUNTRY_CODE     = "US"          # ISO code FDA uses
-MFR_ESTAB_TYPE_IDS  = {"5", "9"}    # 5 = Manufacture Medical Device
-                                    # 9 = Develop Specifications But Do Not Manufacture
+API_BASE = "https://api.fda.gov/device/registrationlisting.json"
 
-# FDA download page lists these. Files are updated every Sunday night.
-FDA_BASE = "https://www.accessdata.fda.gov/premarket/ftparea"
-FILES = {
-    "registration":         f"{FDA_BASE}/Registration.zip",
-    "owner_operator":       f"{FDA_BASE}/Owner_Operator.zip",
-    "listing_estabtypes":   f"{FDA_BASE}/listing_estabtypes.zip",
-    "registration_listing": f"{FDA_BASE}/registration_listing.zip",
-    "estabtypes":           f"{FDA_BASE}/estabtypes.zip",
+MIN_DEVICE_LISTINGS = 5
+
+# These are the strings openFDA returns in establishment_type (verbatim from
+# FDA's establishment-type lookup table).
+QUALIFYING_ESTAB_TYPES = {
+    "Manufacture Medical Device",
+    "Develop Specifications But Do Not Manufacture At This Facility",
 }
 
-CACHE_DIR  = Path(__file__).parent / "fda_cache"
+PAGE_SIZE  = 1000              # max allowed by openFDA
+MAX_SKIP   = 25000             # openFDA cap on `skip`; beyond this we'd need search_after
+PAGE_DELAY = 0.25              # be polite — well under the 240 req/min unauthenticated limit
+TIMEOUT    = 30
+
 OUTPUT_CSV = Path(__file__).parent / "companies.csv"
 
 USER_AGENT = (
@@ -74,150 +74,47 @@ USER_AGENT = (
 
 
 # ---------------------------------------------------------------------------
-# Download + extract helpers
+# openFDA paging
 # ---------------------------------------------------------------------------
 
-def download_zip(url: str, dest: Path) -> Path:
-    """Download a ZIP if we don't already have a cached copy."""
-    if dest.exists():
-        print(f"  cached: {dest.name}")
-        return dest
-    print(f"  downloading: {url}")
-    r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=120, stream=True)
+def fetch_page(session: requests.Session, skip: int) -> tuple[list[dict], int]:
+    """Fetch one page. Returns (results, total). Empty results signals end."""
+    params = {
+        "search": 'iso_country_code:"US"',
+        "limit":  PAGE_SIZE,
+        "skip":   skip,
+    }
+    api_key = os.environ.get("OPENFDA_API_KEY", "").strip()
+    if api_key:
+        params["api_key"] = api_key
+
+    r = session.get(API_BASE, params=params, timeout=TIMEOUT)
+    if r.status_code == 404:
+        # openFDA returns 404 with {"error": {"code": "NOT_FOUND"}} when skip
+        # exceeds the result set. That's a normal end-of-data signal, not an error.
+        try:
+            err = r.json().get("error", {}).get("code")
+            if err in ("NOT_FOUND", "OVER_RATE_LIMIT"):
+                return [], 0
+        except ValueError:
+            pass
     r.raise_for_status()
-    dest.write_bytes(r.content)
-    print(f"            wrote {dest.stat().st_size:,} bytes")
-    return dest
-
-
-def read_pipe_file(zip_path: Path) -> Iterator[list[str]]:
-    """Yield rows from the .txt file inside a FDA ZIP. Files are pipe-separated.
-
-    FDA files use Windows-1252 encoding and sometimes have ragged rows. We're
-    forgiving: anything that fails to parse is skipped with a warning, not raised.
-    """
-    with zipfile.ZipFile(zip_path) as zf:
-        # Each FDA ZIP contains exactly one .txt file
-        names = [n for n in zf.namelist() if n.lower().endswith(".txt")]
-        if not names:
-            raise RuntimeError(f"No .txt file inside {zip_path.name}")
-        with zf.open(names[0]) as raw:
-            text = io.TextIOWrapper(raw, encoding="cp1252", errors="replace", newline="")
-            for line in text:
-                line = line.rstrip("\r\n")
-                if not line:
-                    continue
-                yield line.split("|")
+    body = r.json()
+    return body.get("results", []), body.get("meta", {}).get("results", {}).get("total", 0)
 
 
 # ---------------------------------------------------------------------------
-# Loaders for each FDA file
-# ---------------------------------------------------------------------------
-
-def load_registrations(path: Path) -> dict[str, dict]:
-    """
-    Schema (from FDA):
-      Registration key | Registration number | Status id | Initial importer flag |
-      Expiry year | Address type id | Name | Address1 | Address2 | City |
-      State id | ISO country code | Zip | Postal
-
-    Returns: { reg_key: {name, city, state, country, address1, address2} }
-    """
-    out: dict[str, dict] = {}
-    rows_seen = 0
-    for r in read_pipe_file(path):
-        rows_seen += 1
-        if len(r) < 12:
-            continue
-        reg_key = r[0].strip()
-        if not reg_key:
-            continue
-        out[reg_key] = {
-            "name":      (r[6] or "").strip(),
-            "address1":  (r[7] or "").strip(),
-            "address2":  (r[8] or "").strip(),
-            "city":      (r[9] or "").strip(),
-            "state_id":  (r[10] or "").strip(),
-            "country":   (r[11] or "").strip().upper(),
-        }
-    print(f"  registrations loaded: {len(out):,} / {rows_seen:,} rows")
-    return out
-
-
-def load_owner_operators(path: Path) -> dict[str, tuple[str, str]]:
-    """
-    Schema:
-      Registration Key | Contact ID | Firm Name | Owner Operator Number
-
-    Returns: { reg_key: (firm_name, owner_op_number) }
-    """
-    out: dict[str, tuple[str, str]] = {}
-    for r in read_pipe_file(path):
-        if len(r) < 4:
-            continue
-        reg_key = r[0].strip()
-        firm    = (r[2] or "").strip()
-        oo_num  = (r[3] or "").strip()
-        if reg_key and oo_num:
-            out[reg_key] = (firm, oo_num)
-    print(f"  owner-operators linked: {len(out):,}")
-    return out
-
-
-def load_listing_estabtypes(path: Path) -> set[str]:
-    """
-    Schema:
-      Registration Key | Registration listing Id | Establishment Type Id
-
-    Returns set of registration keys that have at least one establishment
-    type in MFR_ESTAB_TYPE_IDS (Manufacturer / Specification Developer).
-    """
-    qualifying: set[str] = set()
-    rows = 0
-    for r in read_pipe_file(path):
-        rows += 1
-        if len(r) < 3:
-            continue
-        reg_key      = r[0].strip()
-        estab_type   = r[2].strip()
-        if estab_type in MFR_ESTAB_TYPE_IDS and reg_key:
-            qualifying.add(reg_key)
-    print(f"  registrations classified Mfr/SpecDev: {len(qualifying):,} / {rows:,} listing-types")
-    return qualifying
-
-
-def load_registration_listings(path: Path) -> dict[str, set[str]]:
-    """
-    Schema:
-      Registration listing id | Registration key | File ID | Premarket Submission Number
-
-    Returns: { reg_key: {file_id, file_id, ...} }  (set of distinct devices per facility)
-    """
-    out: dict[str, set[str]] = defaultdict(set)
-    for r in read_pipe_file(path):
-        if len(r) < 3:
-            continue
-        reg_key = r[1].strip()
-        file_id = r[2].strip()
-        if reg_key and file_id:
-            out[reg_key].add(file_id)
-    print(f"  registrations with device listings: {len(out):,}")
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Junk filter — drop entities that aren't really device companies
+# Junk filter
 # ---------------------------------------------------------------------------
 
 JUNK_PATTERNS = [
-    re.compile(r"\b(DDS|DMD|MD|DO|DPM|OD)\b", re.I),                   # individual practitioners
+    re.compile(r"\b(DDS|DMD|MD|DO|DPM|OD)\b", re.I),
     re.compile(r"\b(dental (lab|laboratory)|orthodontic lab)\b", re.I),
     re.compile(r"\b(hospital|clinic|medical center|medical centre)\b", re.I),
     re.compile(r"\bpharmacy\b", re.I),
     re.compile(r"\bveterinary\b", re.I),
     re.compile(r"\b(dr\.|doctor)\s", re.I),
 ]
-
 
 def is_junk_name(name: str) -> bool:
     if not name or len(name) < 3:
@@ -226,142 +123,173 @@ def is_junk_name(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Main pipeline
+# Aggregation
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    CACHE_DIR.mkdir(exist_ok=True)
+    started = time.time()
 
-    print("Step 1: Downloading FDA files (cached after first run)")
-    paths = {}
-    for key, url in FILES.items():
-        paths[key] = download_zip(url, CACHE_DIR / Path(url).name)
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json"})
 
-    print("\nStep 2: Loading establishment registrations")
-    registrations = load_registrations(paths["registration"])
+    print(f"Fetching from openFDA: {API_BASE}")
+    print(f"Filter: iso_country_code = US")
+    print(f"Page size: {PAGE_SIZE}, max skip: {MAX_SKIP}")
+    print()
 
-    print("\nStep 3: Loading owner-operator linkage")
-    owner_ops = load_owner_operators(paths["owner_operator"])
-
-    print("\nStep 4: Identifying Manufacturer / Specification Developer establishments")
-    qualifying = load_listing_estabtypes(paths["listing_estabtypes"])
-
-    print("\nStep 5: Counting device listings per establishment")
-    listings = load_registration_listings(paths["registration_listing"])
-
-    print("\nStep 6: Aggregating by owner-operator (= legal company)")
-
-    # Per-company aggregation
     by_oo: dict[str, dict] = defaultdict(lambda: {
-        "firm_name":         "",
-        "facility_count":    0,
-        "device_ids":        set(),
-        "states":            set(),
-        "cities":            set(),
-        "us_facilities":     0,
-        "sample_address":    "",
+        "firm_name":       "",
+        "facility_count":  0,
+        "device_keys":     set(),    # use product_code+device_name as device identity
+        "states":          set(),
+        "cities":          set(),
+        "sample_address":  "",
     })
 
-    skipped_non_us = 0
+    skip = 0
+    page_num = 0
+    total_records = None
+    qualifying_facilities = 0
     skipped_not_mfr = 0
-    skipped_no_owner = 0
-    total_us_mfr_facilities = 0
 
-    for reg_key, reg in registrations.items():
-        # Filter 1: must be a manufacturer or spec developer
-        if reg_key not in qualifying:
-            skipped_not_mfr += 1
-            continue
-        # Filter 2: must be US
-        if reg["country"] != US_COUNTRY_CODE:
-            skipped_non_us += 1
-            continue
-        # Filter 3: must have an owner-operator linkage
-        if reg_key not in owner_ops:
-            skipped_no_owner += 1
-            continue
+    while skip < MAX_SKIP:
+        page_num += 1
+        try:
+            results, total = fetch_page(session, skip)
+        except requests.exceptions.HTTPError as e:
+            print(f"⚠ openFDA error on page {page_num} (skip={skip}): {e}", file=sys.stderr)
+            break
+        except requests.RequestException as e:
+            print(f"⚠ network error on page {page_num} (skip={skip}): {e}", file=sys.stderr)
+            break
 
-        firm_name, oo_num = owner_ops[reg_key]
-        bucket = by_oo[oo_num]
+        if total_records is None and total:
+            total_records = total
+            print(f"Total US records reported by openFDA: {total_records:,}")
+            print()
 
-        # Prefer the longest firm name we see — usually the most descriptive.
-        if len(firm_name) > len(bucket["firm_name"]):
-            bucket["firm_name"] = firm_name
+        if not results:
+            print(f"  page {page_num}: no more results (skip={skip})")
+            break
 
-        bucket["facility_count"] += 1
-        bucket["us_facilities"]  += 1
-        if reg["state_id"]: bucket["states"].add(reg["state_id"])
-        if reg["city"]:     bucket["cities"].add(reg["city"])
-        if not bucket["sample_address"] and reg["address1"]:
-            bucket["sample_address"] = (
-                f"{reg['address1']}, {reg['city']}, {reg['state_id']} {reg.get('zip','')}"
-            ).strip(", ")
+        added = 0
+        for rec in results:
+            estab_types = set(rec.get("establishment_type") or [])
+            if not estab_types & QUALIFYING_ESTAB_TYPES:
+                skipped_not_mfr += 1
+                continue
 
-        for fid in listings.get(reg_key, ()):
-            bucket["device_ids"].add(fid)
-        total_us_mfr_facilities += 1
+            # owner_operator can be a dict or missing
+            oo = rec.get("owner_operator") or {}
+            oo_num = str(oo.get("owner_operator_number") or "").strip()
+            if not oo_num:
+                # Fall back to firm_number if owner_operator_number missing
+                oo_num = str(rec.get("firm_number") or "").strip()
+            if not oo_num:
+                continue
 
-    print(f"  US Mfr/SpecDev facilities included: {total_us_mfr_facilities:,}")
-    print(f"  skipped (not Mfr/SpecDev):          {skipped_not_mfr:,}")
-    print(f"  skipped (non-US):                   {skipped_non_us:,}")
-    print(f"  skipped (no owner-operator):        {skipped_no_owner:,}")
-    print(f"  distinct companies aggregated:       {len(by_oo):,}")
+            firm_name = (oo.get("firm_name") or rec.get("firm_name") or "").strip()
+            bucket = by_oo[oo_num]
+            if len(firm_name) > len(bucket["firm_name"]):
+                bucket["firm_name"] = firm_name
 
-    print(f"\nStep 7: Filtering to companies with >= {MIN_DEVICE_LISTINGS} device listings"
-          f" and dropping non-company entities")
+            bucket["facility_count"] += 1
+            qualifying_facilities += 1
 
+            state = (rec.get("state_code") or "").strip()
+            city  = (rec.get("city") or "").strip()
+            if state: bucket["states"].add(state)
+            if city:  bucket["cities"].add(city)
+
+            if not bucket["sample_address"]:
+                addr1 = (rec.get("address_1") or "").strip()
+                zipc  = (rec.get("zip_code") or "").strip()
+                pieces = [p for p in [addr1, city, state, zipc] if p]
+                if pieces:
+                    bucket["sample_address"] = ", ".join(pieces[:3]) + (f" {zipc}" if zipc else "")
+
+            # Device identity: prefer product_code; fall back to device_name
+            for prod in (rec.get("products") or []):
+                code = (prod.get("product_code") or "").strip()
+                openfda = prod.get("openfda") or {}
+                names = openfda.get("device_name") or []
+                if isinstance(names, list):
+                    name_key = names[0] if names else ""
+                else:
+                    name_key = str(names)
+                key = (code, name_key.strip().lower())
+                if key != ("", ""):
+                    bucket["device_keys"].add(key)
+
+            added += 1
+
+        print(f"  page {page_num}: skip={skip:>5}  results={len(results):>4}  qualifying={added:>4}")
+
+        skip += len(results)
+        if len(results) < PAGE_SIZE:
+            break
+        time.sleep(PAGE_DELAY)
+
+    print()
+    print(f"Pages fetched:                    {page_num}")
+    print(f"Qualifying US facilities kept:    {qualifying_facilities:,}")
+    print(f"Facilities skipped (not Mfr/SD):  {skipped_not_mfr:,}")
+    print(f"Distinct owner-operators:         {len(by_oo):,}")
+
+    # Filter + emit
     rows: list[dict] = []
-    skipped_few_devices = 0
+    skipped_few = 0
     skipped_junk = 0
-
     for oo_num, b in by_oo.items():
-        n_devices = len(b["device_ids"])
+        n_devices = len(b["device_keys"])
         if n_devices < MIN_DEVICE_LISTINGS:
-            skipped_few_devices += 1
+            skipped_few += 1
             continue
         if is_junk_name(b["firm_name"]):
             skipped_junk += 1
             continue
-
-        primary_city = next(iter(b["cities"]), "") if len(b["cities"]) == 1 \
-                       else (max(b["cities"], key=len) if b["cities"] else "")
-
+        primary_city = (
+            next(iter(b["cities"])) if len(b["cities"]) == 1
+            else (max(b["cities"], key=len) if b["cities"] else "")
+        )
         rows.append({
-            "name":                     b["firm_name"],
-            "state":                    ";".join(sorted(b["states"])) if b["states"] else "",
-            "primary_city":             primary_city,
-            "num_us_facilities":        b["us_facilities"],
-            "num_devices":              n_devices,
-            "owner_op_number":          oo_num,
-            "sample_facility_address":  b["sample_address"],
-            "source":                   "fda_establishment_registration",
+            "name":                    b["firm_name"],
+            "state":                   ";".join(sorted(b["states"])) if b["states"] else "",
+            "primary_city":            primary_city,
+            "num_us_facilities":       b["facility_count"],
+            "num_devices":             n_devices,
+            "owner_op_number":         oo_num,
+            "sample_facility_address": b["sample_address"],
+            "source":                  "openfda_registrationlisting",
         })
 
-    print(f"  dropped (< {MIN_DEVICE_LISTINGS} devices):  {skipped_few_devices:,}")
-    print(f"  dropped (looks like an individual/clinic): {skipped_junk:,}")
-    print(f"  final company count: {len(rows):,}")
+    print(f"Dropped (< {MIN_DEVICE_LISTINGS} devices):           {skipped_few:,}")
+    print(f"Dropped (junk name):              {skipped_junk:,}")
+    print(f"Final company count:              {len(rows):,}")
 
-    # Sort: largest companies first
     rows.sort(key=lambda r: (-r["num_devices"], r["name"]))
 
-    print(f"\nStep 8: Writing {OUTPUT_CSV}")
+    print()
+    print(f"Writing {OUTPUT_CSV}")
     with OUTPUT_CSV.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()) if rows else [
-            "name","state","primary_city","num_us_facilities","num_devices",
-            "owner_op_number","sample_facility_address","source"
-        ])
+        fieldnames = ["name","state","primary_city","num_us_facilities","num_devices",
+                      "owner_op_number","sample_facility_address","source"]
+        w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)
 
     if rows:
-        print("\nTop 20 by device count:")
+        print()
+        print("Top 20 by device count:")
         for r in rows[:20]:
             print(f"  {r['num_devices']:>4}  {r['name'][:60]:60s}  "
                   f"({r['num_us_facilities']} facility/ies, {r['state'] or '?'})")
 
-    print(f"\n✓ Wrote {len(rows):,} companies to {OUTPUT_CSV}")
-    print("  Next: run enrich_websites.py to attach websites to each company.")
-    return 0
+    elapsed = time.time() - started
+    print()
+    print(f"✓ Wrote {len(rows):,} companies in {elapsed:.1f}s")
+    print("  Next: stage 2 will resolve websites for each company.")
+    return 0 if rows else 2
 
 
 if __name__ == "__main__":
