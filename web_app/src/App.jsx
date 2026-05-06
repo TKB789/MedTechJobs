@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Search, Bookmark, MapPin, Briefcase, Building2,
   Calendar, X, Download, ArrowUpRight, Layers
@@ -38,6 +38,79 @@ function daysAgo(d) {
   if (diff <= 0) return 'today';
   if (diff === 1) return '1 day ago';
   return `${diff} days ago`;
+}
+
+// US states + 2-letter codes for detecting US locations that don't say "USA".
+const US_STATE_NAMES = [
+  'Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut','Delaware',
+  'Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa','Kansas','Kentucky',
+  'Louisiana','Maine','Maryland','Massachusetts','Michigan','Minnesota','Mississippi',
+  'Missouri','Montana','Nebraska','Nevada','New Hampshire','New Jersey','New Mexico',
+  'New York','North Carolina','North Dakota','Ohio','Oklahoma','Oregon','Pennsylvania',
+  'Rhode Island','South Carolina','South Dakota','Tennessee','Texas','Utah','Vermont',
+  'Virginia','Washington','West Virginia','Wisconsin','Wyoming','District of Columbia',
+];
+const US_STATE_CODES = [
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY',
+  'LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+  'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC',
+];
+
+// Patterns for non-US countries we commonly see in medtech postings.
+// Each entry maps a regex tested against the raw location string to a country name.
+const COUNTRY_PATTERNS = [
+  [/\b(USA|U\.S\.A\.|U\.S\.|United States|US-)/i, 'United States'],
+  [/\b(United Kingdom|UK|England|Scotland|Wales|Northern Ireland)\b/i, 'United Kingdom'],
+  [/\bIreland\b/i, 'Ireland'],
+  [/\b(Germany|Deutschland)\b/i, 'Germany'],
+  [/\bFrance\b/i, 'France'],
+  [/\bSwitzerland\b/i, 'Switzerland'],
+  [/\bNetherlands\b/i, 'Netherlands'],
+  [/\bBelgium\b/i, 'Belgium'],
+  [/\bItaly\b/i, 'Italy'],
+  [/\bSpain\b/i, 'Spain'],
+  [/\bSweden\b/i, 'Sweden'],
+  [/\bDenmark\b/i, 'Denmark'],
+  [/\bPoland\b/i, 'Poland'],
+  [/\bCanada\b/i, 'Canada'],
+  [/\bMexico\b/i, 'Mexico'],
+  [/\b(Costa Rica)\b/i, 'Costa Rica'],
+  [/\bBrazil\b/i, 'Brazil'],
+  [/\b(China|Shanghai|Beijing|Shenzhen)\b/i, 'China'],
+  [/\bJapan\b/i, 'Japan'],
+  [/\b(Korea|Seoul)\b/i, 'South Korea'],
+  [/\b(India|Bangalore|Bengaluru|Mumbai|Pune|Hyderabad|Gurgaon)\b/i, 'India'],
+  [/\bSingapore\b/i, 'Singapore'],
+  [/\bAustralia\b/i, 'Australia'],
+  [/\bIsrael\b/i, 'Israel'],
+];
+
+/**
+ * Best-effort country detection from a free-text location string.
+ * Workday writes "USA - California - Irvine", Eightfold writes "Boston, MA, United States",
+ * Greenhouse writes "Boston, MA". We try patterns first, then fall back to US-state
+ * detection, then "Other" so nothing is dropped.
+ */
+function detectCountry(loc) {
+  if (!loc) return 'Other';
+  if (loc === 'Not specified') return 'Other';
+  if (/^remote/i.test(loc.trim())) return 'Remote';
+
+  for (const [re, name] of COUNTRY_PATTERNS) {
+    if (re.test(loc)) return name;
+  }
+
+  // Fall back: if any US state name or 2-letter code appears as a token, call it US.
+  for (const s of US_STATE_NAMES) {
+    if (loc.includes(s)) return 'United States';
+  }
+  // Token-aware match for state codes so "MA" matches but "Mali" doesn't.
+  const tokens = loc.split(/[\s,;:\-]+/);
+  for (const t of tokens) {
+    if (US_STATE_CODES.includes(t)) return 'United States';
+  }
+
+  return 'Other';
 }
 
 /* ----------------------------------------------------------------- */
@@ -126,16 +199,44 @@ export default function MedicalDeviceJobSearch() {
 
   /* ---- Derived lists -------------------------------------------- */
   const companies   = useMemo(() => [...new Set(jobs.map(j => j.company))].sort(),    [jobs]);
-  const locations   = useMemo(() => [...new Set(jobs.map(j => j.location))].sort(),   [jobs]);
   const jobTypes    = useMemo(() => [...new Set(jobs.map(j => j.jobType))].sort(),    [jobs]);
   const departments = useMemo(() => [...new Set(jobs.map(j => j.department))].sort(), [jobs]);
+
+  // Locations are grouped by country. Each option is either a string (a city)
+  // or an object with kind:'group' (a country header). Country pseudo-options
+  // are encoded as "country:United States" so the filter logic can detect them.
+  const locationOptions = useMemo(() => {
+    const byCountry = new Map();           // country -> Set(rawLocation)
+    for (const j of jobs) {
+      const raw = j.location || 'Not specified';
+      const country = detectCountry(raw);
+      if (!byCountry.has(country)) byCountry.set(country, new Set());
+      byCountry.get(country).add(raw);
+    }
+    // Sort countries with USA first, then alphabetically
+    const countries = [...byCountry.keys()].sort((a, b) => {
+      if (a === 'United States') return -1;
+      if (b === 'United States') return 1;
+      if (a === 'Other')         return 1;
+      if (b === 'Other')         return -1;
+      return a.localeCompare(b);
+    });
+
+    const out = [];
+    for (const c of countries) {
+      const cities = [...byCountry.get(c)].sort();
+      out.push({ kind: 'group', label: c });
+      out.push({ value: `country:${c}`, label: `All of ${c} (${cities.length})` });
+      for (const city of cities) out.push(city);
+    }
+    return out;
+  }, [jobs]);
 
   const filteredJobs = useMemo(() => {
     let result = jobs;
 
     if (searchTerm.trim()) {
       // Split on whitespace so "regulatory boston" finds Boston-based regulatory roles.
-      // Every token must appear somewhere in the searchable haystack.
       const tokens = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
       result = result.filter(j => {
         const haystack = [
@@ -145,8 +246,19 @@ export default function MedicalDeviceJobSearch() {
         return tokens.every(t => haystack.includes(t));
       });
     }
-    if (filters.company)    result = result.filter(j => j.company === filters.company);
-    if (filters.location)   result = result.filter(j => j.location.toLowerCase().includes(filters.location.toLowerCase()));
+    if (filters.company) result = result.filter(j => j.company === filters.company);
+
+    if (filters.location) {
+      if (filters.location.startsWith('country:')) {
+        const c = filters.location.slice('country:'.length);
+        result = result.filter(j => detectCountry(j.location) === c);
+      } else {
+        result = result.filter(j =>
+          j.location.toLowerCase().includes(filters.location.toLowerCase())
+        );
+      }
+    }
+
     if (filters.jobType)    result = result.filter(j => j.jobType === filters.jobType);
     if (filters.department) result = result.filter(j => j.department === filters.department);
 
@@ -332,25 +444,25 @@ export default function MedicalDeviceJobSearch() {
 
           {/* Filter row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-3 mt-6">
-            <FilterSelect
+            <Combobox
               label="Company"
               value={filters.company}
               onChange={(v) => setFilters({ ...filters, company: v })}
               options={companies}
             />
-            <FilterSelect
+            <Combobox
               label="Location"
               value={filters.location}
               onChange={(v) => setFilters({ ...filters, location: v })}
-              options={locations}
+              options={locationOptions}
             />
-            <FilterSelect
+            <Combobox
               label="Type"
               value={filters.jobType}
               onChange={(v) => setFilters({ ...filters, jobType: v })}
               options={jobTypes}
             />
-            <FilterSelect
+            <Combobox
               label="Department"
               value={filters.department}
               onChange={(v) => setFilters({ ...filters, department: v })}
@@ -444,26 +556,124 @@ export default function MedicalDeviceJobSearch() {
 /*  Subcomponents                                                    */
 /* ----------------------------------------------------------------- */
 
-function FilterSelect({ label, value, onChange, options }) {
+function Combobox({ label, value, onChange, options, placeholder = 'All' }) {
+  const [open, setOpen]   = useState(false);
+  const [query, setQuery] = useState('');
+  const ref               = useRef(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return options;
+    const q = query.toLowerCase();
+    return options.filter(opt =>
+      (typeof opt === 'string' ? opt : opt.label || '').toLowerCase().includes(q)
+    );
+  }, [options, query]);
+
+  // For country: prefixed values, show a friendly label like "All of United States"
+  // instead of the raw "country:United States".
+  let display = value || '';
+  if (display.startsWith('country:')) {
+    display = `All of ${display.slice('country:'.length)}`;
+  }
+  const truncated = display.length > 32 ? display.slice(0, 32) + '…' : display;
+
   return (
-    <label className="block">
+    <div className="block" ref={ref}>
       <div className="font-mono text-[10px] uppercase tracking-[0.25em] text-ink-500 mb-1">
         {label}
       </div>
       <div className="relative">
-        <select
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-full appearance-none bg-transparent border-0 border-b border-ink-900/40
+        <button
+          type="button"
+          onClick={() => { setOpen(o => !o); setQuery(''); }}
+          className="w-full text-left bg-transparent border-0 border-b border-ink-900/40
                      py-1.5 pr-6 font-body text-sm text-ink-900 cursor-pointer
-                     focus:outline-none focus:border-accent transition-colors"
+                     focus:outline-none focus:border-accent transition-colors
+                     hover:border-ink-900 truncate"
         >
-          <option value="">All</option>
-          {options.map(o => <option key={o} value={o}>{o}</option>)}
-        </select>
-        <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-ink-400 text-xs">▾</span>
+          {truncated || <span className="text-ink-400">{placeholder}</span>}
+        </button>
+        <span className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 text-ink-400 text-xs">
+          ▾
+        </span>
+
+        {open && (
+          <div className="absolute z-50 left-0 right-0 mt-1 bg-ink-50 border border-ink-900/30
+                          shadow-soft max-h-72 overflow-hidden flex flex-col">
+            <div className="p-2 border-b border-ink-900/10 bg-ink-100/40">
+              <input
+                type="text"
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Type to filter…"
+                className="w-full bg-transparent border-b border-ink-300 focus:border-accent
+                           outline-none py-1 px-1 font-body text-sm placeholder-ink-400"
+              />
+            </div>
+            <div className="overflow-y-auto flex-1">
+              <button
+                type="button"
+                onClick={() => { onChange(''); setOpen(false); }}
+                className={classNames(
+                  'block w-full text-left px-3 py-2 font-body text-sm border-b border-ink-900/5',
+                  value === ''
+                    ? 'bg-ink-900 text-ink-50'
+                    : 'hover:bg-ink-100 text-ink-900'
+                )}
+              >
+                {placeholder}
+              </button>
+              {filtered.length === 0 ? (
+                <div className="px-3 py-3 font-mono text-[11px] uppercase tracking-[0.2em] text-ink-400">
+                  No matches
+                </div>
+              ) : (
+                filtered.map((opt) => {
+                  if (typeof opt !== 'string' && opt.kind === 'group') {
+                    return (
+                      <div
+                        key={'g:' + opt.label}
+                        className="px-3 pt-3 pb-1 font-mono text-[10px] uppercase tracking-[0.25em] text-ink-500 bg-ink-100/40 border-t border-ink-900/5 first:border-t-0"
+                      >
+                        {opt.label}
+                      </div>
+                    );
+                  }
+                  const v = typeof opt === 'string' ? opt : opt.value;
+                  const l = typeof opt === 'string' ? opt : opt.label;
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => { onChange(v); setOpen(false); }}
+                      className={classNames(
+                        'block w-full text-left px-3 py-1.5 font-body text-sm border-b border-ink-900/5',
+                        value === v
+                          ? 'bg-ink-900 text-ink-50'
+                          : 'hover:bg-ink-100 text-ink-900'
+                      )}
+                    >
+                      {l}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
       </div>
-    </label>
+    </div>
   );
 }
 
